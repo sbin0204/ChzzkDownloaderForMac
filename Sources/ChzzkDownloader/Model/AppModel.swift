@@ -99,7 +99,7 @@ final class AppModel {
     private var lastCookieAuthWarningAt: Date?
 
     /// Live status of registered channels, for the dashboard's on-demand panel.
-    var liveStatus: [String: (isLive: Bool, title: String, category: String)] = [:]
+    var liveStatus: [String: (isLive: Bool, title: String, category: String, tags: [String])] = [:]
     var recordingChannels: Set<String> = [] {
         didSet {
             refreshActivityAssertion()
@@ -235,20 +235,21 @@ final class AppModel {
                 guard let self else { return }
                 let channels = self.config.channels
                 let cookies = self.config.cookies
-                await withTaskGroup(of: (String, Bool, String, String, Bool).self) { group in
+                await withTaskGroup(of: (String, Bool, String, String, [String], Bool).self) { group in
                     for ch in channels {
                         group.addTask {
                             let result = await ChzzkAPI.fetchLiveInfoResult(channelID: ch.id, cookies: cookies)
                             switch result {
                             case .info(let info):
-                                return (ch.id, info?.status == "OPEN", info?.liveTitle ?? "", info?.category ?? "", false)
+                                return (ch.id, info?.status == "OPEN", info?.liveTitle ?? "",
+                                        info?.category ?? "", info?.tags ?? [], false)
                             case .authFailed:
-                                return (ch.id, false, "", "", true)
+                                return (ch.id, false, "", "", [], true)
                             }
                         }
                     }
-                    for await (id, live, title, category, authFailed) in group {
-                        self.liveStatus[id] = (live, title, category)
+                    for await (id, live, title, category, tags, authFailed) in group {
+                        self.liveStatus[id] = (live, title, category, tags)
                         if authFailed {
                             self.markCookieAuthFailure(context: "라이브 상태 확인")
                         }

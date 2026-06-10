@@ -108,9 +108,13 @@ struct DashboardView: View {
                 Text(ch.name).fontWeight(.medium)
                 Text(liveStatusText(isLive: isLive, title: status?.title))
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                if isLive, let cat = status?.category, !cat.isEmpty {
-                    Text(cat)
-                        .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+                if isLive, let status {
+                    let detail = categoryTagLine(category: status.category, tags: status.tags)
+                    if !detail.isEmpty {
+                        Text(detail)
+                            .font(.caption2).foregroundStyle(.tertiary)
+                            .lineLimit(1).truncationMode(.tail)
+                    }
                 }
             }
             Spacer(minLength: 12)
@@ -130,6 +134,14 @@ struct DashboardView: View {
             .frame(width: 52)
         }
         .padding(.vertical, 8)
+    }
+
+    /// "카테고리 · #태그1 #태그2" — empty parts are omitted.
+    private func categoryTagLine(category: String, tags: [String]) -> String {
+        var parts: [String] = []
+        if !category.isEmpty { parts.append(category) }
+        if !tags.isEmpty { parts.append(tags.map { "#\($0)" }.joined(separator: " ")) }
+        return parts.joined(separator: " · ")
     }
 
     private func liveStatusText(isLive: Bool, title: String?) -> String {
