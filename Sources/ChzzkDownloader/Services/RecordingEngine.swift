@@ -159,11 +159,15 @@ final class RecordingEngine {
             let cfg = currentConfig()
             guard cfg.channels.contains(where: { $0.id == channelID }) else { return }
 
-            // Wait for the channel to go live.
+            // Wait for the channel to go live (and, if a tag filter is set, for a
+            // live whose tags match it).
             var live: LiveInfo?
+            var loggedTagSkip = false
             while !Task.isCancelled {
+                let pollConfig = currentConfig()
+                let channel = pollConfig.channels.first(where: { $0.id == channelID })
                 let result = await ChzzkAPI.fetchLiveInfoResult(
-                    channelID: channelID, cookies: currentConfig().cookies)
+                    channelID: channelID, cookies: pollConfig.cookies)
                 let info: LiveInfo?
                 switch result {
                 case .info(let value):
@@ -172,7 +176,20 @@ final class RecordingEngine {
                     onAuthFailure?("\(channelName) 라이브 상태 확인")
                     info = nil
                 }
-                if info?.status == "OPEN" { live = info; break }
+                if let info, info.status == "OPEN" {
+                    if let channel, !channel.acceptsTags(info.tags) {
+                        if !loggedTagSkip {
+                            let tagText = info.tags.isEmpty ? "없음" : info.tags.joined(separator: ", ")
+                            onLog?("'\(channelName)' 방송 중이지만 태그가 일치하지 않아 건너뜁니다 (방송 태그: \(tagText)).")
+                            loggedTagSkip = true
+                        }
+                        await sleepOrWake(channelID: channelID, seconds: UInt64(cfg.timeout))
+                        continue
+                    }
+                    live = info
+                    break
+                }
+                loggedTagSkip = false
                 if info?.status == "BLOCK" {
                     onLog?("'\(channelName)' 채널이 차단되었습니다.")
                 }

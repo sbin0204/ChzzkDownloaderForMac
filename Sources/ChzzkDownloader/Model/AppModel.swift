@@ -101,9 +101,16 @@ final class AppModel {
     /// Live status of registered channels, for the dashboard's on-demand panel.
     var liveStatus: [String: (isLive: Bool, title: String)] = [:]
     var recordingChannels: Set<String> = [] {
-        didSet { refreshActivityAssertion() }
+        didSet {
+            refreshActivityAssertion()
+            persistArmedChannelsIfChanged(oldValue)
+        }
     }
     private var oneShotRecordingChannels: Set<String> = []
+    /// Suppresses the recordingChannels didSet from rewriting config.armed_channels.
+    /// Set during launch-time restore and during termination, so the persisted
+    /// monitoring set survives a quit instead of being wiped to empty on shutdown.
+    private var suppressArmedPersist = false
     private var activityToken: NSObjectProtocol?
 
     /// Resolved tool paths — a valid override in config wins, else auto-detect.
@@ -213,6 +220,7 @@ final class AppModel {
         Notifier.requestAuthorizationIfNeeded()
         checkCookieRefreshReminder()
         importCookiesOnLaunchIfNeeded()
+        restoreArmedChannels()
         startLivePolling()
         startScheduler()
     }
@@ -335,6 +343,41 @@ final class AppModel {
             }.value
             guard !trashed.isEmpty else { return }
             self?.appendLog("순환 녹화: 오래된 파일 \(trashed.count)개를 휴지통으로 이동했습니다.")
+        }
+    }
+
+    /// Persists the set of continuously-monitored channels (excluding one-shot
+    /// scheduled recordings, which the scheduler resumes on its own) so monitoring
+    /// can be restored on the next launch. No-op while restoring at launch.
+    private func persistArmedChannelsIfChanged(_ oldValue: Set<String>) {
+        guard !suppressArmedPersist else { return }
+        let desired = recordingChannels.subtracting(oneShotRecordingChannels)
+        if Set(config.armed_channels) != desired {
+            config.armed_channels = desired.sorted()
+        }
+    }
+
+    /// Re-arms channels that were being monitored when the app last quit. Each one
+    /// starts in the same continuous-monitoring mode (records the current live now
+    /// if any, otherwise waits for the next broadcast).
+    private func restoreArmedChannels() {
+        let ids = config.armed_channels.filter { id in
+            config.channels.contains { $0.id == id }
+        }
+        guard !ids.isEmpty else { return }
+        guard toolsAvailable else {
+            appendLog("이전 감시 복원 보류: 필수 도구(ffmpeg/streamlink)가 없습니다.")
+            return
+        }
+        suppressArmedPersist = true
+        defer { suppressArmedPersist = false }
+        for id in ids {
+            guard let channel = config.channels.first(where: { $0.id == id }),
+                  !recordingChannels.contains(id) else { continue }
+            engine.startRecording(channelID: id, oneShot: false)
+            oneShotRecordingChannels.remove(id)
+            recordingChannels.insert(id)
+            appendLog("이전 감시 복원: \(channel.name)")
         }
     }
 
@@ -561,8 +604,12 @@ final class AppModel {
             vodDownloader.cancel(item: item)
         }
         engine.terminateAll()
+        // Keep config.armed_channels intact so monitoring resumes next launch;
+        // clearing the in-memory set here must not wipe the persisted list.
+        suppressArmedPersist = true
         recordingChannels.removeAll()
         oneShotRecordingChannels.removeAll()
+        suppressArmedPersist = false
         progress.removeAll()
         refreshActivityAssertion()
         flushConfigSave()
@@ -957,14 +1004,16 @@ final class AppModel {
     enum ChannelEditResult { case ok, invalidID, duplicateID }
 
     /// Adds a channel after validating the ID format and rejecting duplicates.
-    func addChannel(id: String, name: String, outputDir: String, quality: String = Defaults.liveQuality) -> ChannelEditResult {
+    func addChannel(id: String, name: String, outputDir: String, quality: String = Defaults.liveQuality,
+                    tagFilter: [String] = []) -> ChannelEditResult {
         let cid = id.trimmingCharacters(in: .whitespaces)
         guard Validate.matches(Validate.safeChannelID, cid) else { return .invalidID }
         guard !config.channels.contains(where: { $0.id == cid }) else { return .duplicateID }
         config.channels.append(Channel(
             id: cid, name: name.trimmingCharacters(in: .whitespaces).isEmpty ? cid : name.trimmingCharacters(in: .whitespaces),
             output_dir: Validate.normalizeRecordingOutputDir(outputDir),
-            quality: quality))
+            quality: quality,
+            tag_filter: tagFilter))
         return .ok
     }
 
@@ -972,7 +1021,7 @@ final class AppModel {
     /// that collides with a *different* channel.
     func updateChannel(
         originalID: String, id: String, name: String, outputDir: String,
-        quality: String = Defaults.liveQuality
+        quality: String = Defaults.liveQuality, tagFilter: [String] = []
     ) -> ChannelEditResult {
         guard let i = config.channels.firstIndex(where: { $0.id == originalID }) else { return .invalidID }
         let cid = id.trimmingCharacters(in: .whitespaces)
@@ -990,6 +1039,7 @@ final class AppModel {
         config.channels[i].name = name.trimmingCharacters(in: .whitespaces).isEmpty ? cid : name.trimmingCharacters(in: .whitespaces)
         config.channels[i].output_dir = Validate.normalizeRecordingOutputDir(outputDir)
         config.channels[i].quality = Validate.normalizeLiveQuality(quality)
+        config.channels[i].tag_filter = Validate.normalizeTagFilter(tagFilter)
         if cid != originalID {
             config.schedules = SchedulePlanner.renameChannelReferences(
                 schedules: config.schedules,

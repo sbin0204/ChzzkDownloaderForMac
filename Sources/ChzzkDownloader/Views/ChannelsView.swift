@@ -86,6 +86,10 @@ struct ChannelRow: View {
                 Text("id: \(channel.id)").font(.caption).foregroundStyle(.secondary)
                 Text("라이브 화질: \(liveQualityLabel(channel.quality))")
                     .font(.caption2).foregroundStyle(.secondary)
+                if !channel.tag_filter.isEmpty {
+                    Text("녹화 태그: \(channel.tag_filter.joined(separator: ", "))")
+                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                }
                 Text(channel.output_dir == "." ? "기본 저장 폴더" : channel.output_dir)
                     .font(.caption2).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
             }
@@ -115,6 +119,7 @@ struct ChannelEditSheet: View {
     @State private var name = ""
     @State private var outputDir = ""
     @State private var quality = Defaults.liveQuality
+    @State private var tags = ""
     @State private var error: String?
     @State private var showDeleteConfirm = false
 
@@ -141,6 +146,12 @@ struct ChannelEditSheet: View {
                     TextField("저장 폴더 (선택)", text: $outputDir,
                               prompt: Text("비우면 기본 폴더에 저장"))
                     Button("찾아보기…") { browse() }
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    TextField("녹화 태그 (선택)", text: $tags,
+                              prompt: Text("쉼표로 구분, 예: 종합게임, 저챗"))
+                    Text("입력하면 방송 태그가 하나라도 일치할 때만 녹화합니다. 비우면 항상 녹화합니다.")
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
             }
 
@@ -174,14 +185,16 @@ struct ChannelEditSheet: View {
                 id = c.id; name = c.name
                 quality = c.quality
                 outputDir = (c.output_dir == "." ? "" : c.output_dir)
+                tags = c.tag_filter.joined(separator: ", ")
             }
         }
     }
 
     private func save() {
+        let tagFilter = Validate.parseTagFilter(tags)
         let result: AppModel.ChannelEditResult = isEdit
-            ? model.updateChannel(originalID: originalID, id: id, name: name, outputDir: outputDir, quality: quality)
-            : model.addChannel(id: id, name: name, outputDir: outputDir, quality: quality)
+            ? model.updateChannel(originalID: originalID, id: id, name: name, outputDir: outputDir, quality: quality, tagFilter: tagFilter)
+            : model.addChannel(id: id, name: name, outputDir: outputDir, quality: quality, tagFilter: tagFilter)
         switch result {
         case .ok: dismiss()
         case .invalidID: error = "잘못된 채널 ID입니다. 영문, 숫자, '_', '-'만 사용하세요."

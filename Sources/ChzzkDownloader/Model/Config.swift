@@ -93,6 +93,32 @@ enum Validate {
         return text
     }
 
+    static let maxTagFilterCount = 20
+    static let maxTagLength = 30
+
+    /// Parses a comma-separated tag filter string from the channel edit UI.
+    static func parseTagFilter(_ text: String) -> [String] {
+        normalizeTagFilter(text.split(separator: ",").map(String.init))
+    }
+
+    /// Trims, strips control characters, dedupes case-insensitively, and caps
+    /// tag count/length so config.json stays bounded.
+    static func normalizeTagFilter(_ tags: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for raw in tags {
+            var tag = controlChars.stringByReplacingMatches(
+                in: raw, range: NSRange(raw.startIndex..., in: raw), withTemplate: "")
+                .trimmingCharacters(in: .whitespaces)
+            guard !tag.isEmpty else { continue }
+            if tag.count > maxTagLength { tag = String(tag.prefix(maxTagLength)) }
+            guard seen.insert(tag.lowercased()).inserted else { continue }
+            result.append(tag)
+            if result.count == maxTagFilterCount { break }
+        }
+        return result
+    }
+
     static func normalizeRecordingOutputDir(_ value: String) -> String {
         let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return "." }
@@ -130,16 +156,20 @@ struct Channel: Codable, Identifiable, Hashable {
     var name: String
     var output_dir: String
     var quality: String = Defaults.liveQuality
+    /// Record only when the live's tags match one of these (empty = always record).
+    var tag_filter: [String] = []
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, output_dir, quality
+        case id, name, output_dir, quality, tag_filter
     }
 
-    init(id: String, name: String, output_dir: String, quality: String = Defaults.liveQuality) {
+    init(id: String, name: String, output_dir: String, quality: String = Defaults.liveQuality,
+         tag_filter: [String] = []) {
         self.id = id
         self.name = name
         self.output_dir = output_dir
         self.quality = Validate.normalizeLiveQuality(quality)
+        self.tag_filter = Validate.normalizeTagFilter(tag_filter)
     }
 
     init(from decoder: Decoder) throws {
@@ -149,6 +179,16 @@ struct Channel: Codable, Identifiable, Hashable {
         output_dir = try c.decode(String.self, forKey: .output_dir)
         quality = Validate.normalizeLiveQuality(
             try c.decodeIfPresent(String.self, forKey: .quality) ?? Defaults.liveQuality)
+        tag_filter = Validate.normalizeTagFilter(
+            try c.decodeIfPresent([String].self, forKey: .tag_filter) ?? [])
+    }
+
+    /// True when this channel's tag filter accepts a live with the given tags
+    /// (case-insensitive exact match against any filter entry).
+    func acceptsTags(_ tags: [String]) -> Bool {
+        guard !tag_filter.isEmpty else { return true }
+        let liveTags = Set(tags.map { $0.trimmingCharacters(in: .whitespaces).lowercased() })
+        return tag_filter.contains { liveTags.contains($0.lowercased()) }
     }
 }
 
@@ -210,6 +250,9 @@ struct Config: Codable, Hashable {
     /// Optional explicit paths to ffmpeg / streamlink. Empty = auto-detect.
     var ffmpeg_path: String = ""
     var streamlink_path: String = ""
+    /// Channels that were being monitored/recorded when the app last quit,
+    /// so monitoring resumes automatically on the next launch.
+    var armed_channels: [String] = []
 
     init() {}
 
@@ -243,9 +286,16 @@ struct Config: Codable, Hashable {
             ch.name = nm.isEmpty ? cid : nm
             ch.output_dir = Validate.normalizeRecordingOutputDir(ch.output_dir)
             ch.quality = Validate.normalizeLiveQuality(ch.quality)
+            ch.tag_filter = Validate.normalizeTagFilter(ch.tag_filter)
             cleaned.append(ch)
         }
         channels = cleaned
+
+        let channelIDs = Set(channels.map(\.id))
+        var seenArmed = Set<String>()
+        armed_channels = armed_channels.filter {
+            channelIDs.contains($0) && seenArmed.insert($0).inserted
+        }
 
         normalize(encoder: &hevc_settings, allowed: Defaults.hevcEncoders,
                   fallbackEncoder: "libx265", fallbackPreset: "ultrafast")
@@ -273,7 +323,7 @@ extension Config {
         case hevc_settings, av1_settings, log_enabled, cookies, auto_import_cookies_on_launch, proxy
         case notify_on_complete, schedules, live_split_size_mb, live_split_duration_minutes
         case cyclic_recording_enabled, cyclic_max_files, cyclic_max_size_gb, notify_webhook_url
-        case ffmpeg_path, streamlink_path
+        case ffmpeg_path, streamlink_path, armed_channels
     }
 
     /// Lenient decoding: any missing key keeps its default, so loading a
@@ -303,5 +353,6 @@ extension Config {
         if let v = try c.decodeIfPresent(String.self, forKey: .notify_webhook_url) { notify_webhook_url = v }
         if let v = try c.decodeIfPresent(String.self, forKey: .ffmpeg_path) { ffmpeg_path = v }
         if let v = try c.decodeIfPresent(String.self, forKey: .streamlink_path) { streamlink_path = v }
+        if let v = try c.decodeIfPresent([String].self, forKey: .armed_channels) { armed_channels = v }
     }
 }

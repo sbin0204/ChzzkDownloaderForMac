@@ -5,6 +5,7 @@ struct LiveInfo {
     var liveTitle: String
     var channelName: String
     var adult: Bool
+    var tags: [String] = []
 }
 
 enum LiveInfoFetchResult {
@@ -62,7 +63,10 @@ enum ChzzkAPI {
             if let channel = content["channel"] as? [String: Any] {
                 channelName = channel["channelName"] as? String ?? ""
             }
-            return .info(LiveInfo(status: status, liveTitle: title, channelName: channelName, adult: adult))
+            let tags = (content["tags"] as? [Any])?.compactMap { $0 as? String } ?? []
+            return .info(LiveInfo(
+                status: status, liveTitle: title, channelName: channelName,
+                adult: adult, tags: tags))
         } catch {
             return .info(nil)
         }

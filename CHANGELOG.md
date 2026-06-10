@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.0
+
+- Added monitoring state persistence: channels being watched when the app closes resume monitoring on next launch.
+- Added tag-based recording filters: select tags per channel so recording only starts when the broadcast matches one of the chosen tags.
+
 ## 1.0.3
 
 - In-app release notes now render the same changelog page shown in the update dialog.
