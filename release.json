@@ -1,0 +1,35 @@
+{
+  "app": {
+    "name": "Chzzk Downloader for Mac",
+    "executable": "ChzzkDownloader",
+    "bundleIdentifier": "com.chzzkdownloader.mac",
+    "minimumMacOS": "14.0"
+  },
+  "version": {
+    "marketing": "1.0.3",
+    "build": "1.0.3",
+    "changelogHeading": "1.0.3"
+  },
+  "distribution": {
+    "dmgBaseName": "ChzzkDownloaderForMac",
+    "volumeName": "Chzzk Downloader"
+  },
+  "legal": {
+    "copyright": "GPL-3.0-only",
+    "licenseFile": "LICENSE",
+    "thirdPartyNoticesFile": "THIRD_PARTY_NOTICES.md",
+    "changelogFile": "CHANGELOG.md"
+  },
+  "supportDocuments": [
+    {
+      "id": "github-updates-ko",
+      "source": "Sources/ChzzkDownloader/Resources/Documents/UPDATE_GITHUB.ko.md",
+      "dmgName": "GitHub 업데이트 준비.ko.md"
+    },
+    {
+      "id": "github-updates-en",
+      "source": "Sources/ChzzkDownloader/Resources/Documents/UPDATE_GITHUB.en.md",
+      "dmgName": "GitHub Update Setup.en.md"
+    }
+  ]
+}
