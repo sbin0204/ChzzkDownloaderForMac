@@ -108,6 +108,10 @@ struct DashboardView: View {
                 Text(ch.name).fontWeight(.medium)
                 Text(liveStatusText(isLive: isLive, title: status?.title))
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                if isLive, let cat = status?.category, !cat.isEmpty {
+                    Text(cat)
+                        .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+                }
             }
             Spacer(minLength: 12)
 

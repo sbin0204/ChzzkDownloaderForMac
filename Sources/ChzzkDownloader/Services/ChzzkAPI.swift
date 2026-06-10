@@ -6,6 +6,7 @@ struct LiveInfo {
     var channelName: String
     var adult: Bool
     var tags: [String] = []
+    var category: String = ""  // liveCategoryValue (human-readable game/category name)
 }
 
 enum LiveInfoFetchResult {
@@ -64,9 +65,10 @@ enum ChzzkAPI {
                 channelName = channel["channelName"] as? String ?? ""
             }
             let tags = (content["tags"] as? [Any])?.compactMap { $0 as? String } ?? []
+            let category = content["liveCategoryValue"] as? String ?? ""
             return .info(LiveInfo(
                 status: status, liveTitle: title, channelName: channelName,
-                adult: adult, tags: tags))
+                adult: adult, tags: tags, category: category))
         } catch {
             return .info(nil)
         }
