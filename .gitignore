@@ -1,0 +1,29 @@
+# Build artifacts
+/.build/
+*.dmg
+*.app/
+
+# macOS
+.DS_Store
+
+# SwiftPM / Xcode local state
+/.swiftpm/
+**/xcuserdata/
+*.xcuserstate
+
+# Tooling caches
+/.serena/
+
+# Python bytecode cache (bundled streamlink plugin)
+__pycache__/
+*.pyc
+
+# Sparkle signing private key — NEVER commit
+*.pem
+sparkle_private_key.pem
+
+# Sparkle release staging
+release_v1.0/
+release_v1.0.1/
+release_v1.0.2/
+
