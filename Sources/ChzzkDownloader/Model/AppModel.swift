@@ -99,7 +99,7 @@ final class AppModel {
     private var lastCookieAuthWarningAt: Date?
 
     /// Live status of registered channels, for the dashboard's on-demand panel.
-    var liveStatus: [String: (isLive: Bool, title: String, category: String, tags: [String])] = [:]
+    var liveStatus: [String: (isLive: Bool, title: String, category: String, tags: [String], hasMedia: Bool)] = [:]
     var recordingChannels: Set<String> = [] {
         didSet {
             refreshActivityAssertion()
@@ -220,6 +220,7 @@ final class AppModel {
         Notifier.requestAuthorizationIfNeeded()
         checkCookieRefreshReminder()
         importCookiesOnLaunchIfNeeded()
+        salvageOrphanRecordings()
         restoreArmedChannels()
         startLivePolling()
         startScheduler()
@@ -235,28 +236,36 @@ final class AppModel {
                 guard let self else { return }
                 let channels = self.config.channels
                 let cookies = self.config.cookies
-                await withTaskGroup(of: (String, Bool, String, String, [String], Bool).self) { group in
+                await withTaskGroup(of: (String, LiveInfo?, Bool).self) { group in
                     for ch in channels {
                         group.addTask {
                             let result = await ChzzkAPI.fetchLiveInfoResult(channelID: ch.id, cookies: cookies)
                             switch result {
                             case .info(let info):
-                                return (ch.id, info?.status == "OPEN", info?.liveTitle ?? "",
-                                        info?.category ?? "", info?.tags ?? [], false)
+                                return (ch.id, info, false)
                             case .authFailed:
-                                return (ch.id, false, "", "", [], true)
+                                return (ch.id, nil, true)
                             }
                         }
                     }
-                    for await (id, live, title, category, tags, authFailed) in group {
-                        self.liveStatus[id] = (live, title, category, tags)
+                    for await (id, info, authFailed) in group {
+                        let live = info?.status == "OPEN"
+                        self.liveStatus[id] = (
+                            live, info?.liveTitle ?? "", info?.category ?? "",
+                            info?.tags ?? [], info?.hasMedia ?? false)
                         if authFailed {
                             self.markCookieAuthFailure(context: "라이브 상태 확인")
                         }
+                        // Only nudge when the engine could actually record: a live
+                        // without media or with non-matching tags would just burn an
+                        // extra live-detail fetch every poll.
+                        let tagsMatch = self.config.channels.first(where: { $0.id == id })?
+                            .acceptsTags(info?.tags ?? []) ?? true
                         if Self.shouldNudgeArmedRecording(
                             isLive: live,
                             isArmed: self.recordingChannels.contains(id),
-                            isWriting: self.isWritingRecording(id)) {
+                            isWriting: self.isWritingRecording(id),
+                            canRecord: (info?.hasMedia ?? false) && tagsMatch) {
                             self.nudgeArmedRecording(channelID: id)
                         }
                     }
@@ -356,6 +365,16 @@ final class AppModel {
         if Set(config.armed_channels) != desired {
             config.armed_channels = desired.sorted()
         }
+    }
+
+    /// Recovers `.part` recordings orphaned by a crash/force quit by renaming them
+    /// to their final playable names. Runs before monitoring is restored so a new
+    /// session's fresh .part can never be picked up.
+    private func salvageOrphanRecordings() {
+        let dirs = config.channels.map(\.output_dir) + ["."]
+        let salvaged = RecordingEngine.salvageOrphanParts(outputDirs: dirs)
+        guard !salvaged.isEmpty else { return }
+        appendLog("지난 세션의 미완성 녹화 \(salvaged.count)개를 복구했습니다: \(salvaged.joined(separator: ", "))")
     }
 
     /// Re-arms channels that were being monitored when the app last quit. Each one
@@ -559,8 +578,10 @@ final class AppModel {
         return calendar.dateComponents([.day], from: startOfToday, to: nextMonth).day
     }
 
-    nonisolated static func shouldNudgeArmedRecording(isLive: Bool, isArmed: Bool, isWriting: Bool) -> Bool {
-        isLive && isArmed && !isWriting
+    nonisolated static func shouldNudgeArmedRecording(
+        isLive: Bool, isArmed: Bool, isWriting: Bool, canRecord: Bool = true
+    ) -> Bool {
+        isLive && isArmed && !isWriting && canRecord
     }
 
     private func nudgeArmedRecording(channelID: String) {

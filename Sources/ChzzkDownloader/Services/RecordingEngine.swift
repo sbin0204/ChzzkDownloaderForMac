@@ -160,9 +160,13 @@ final class RecordingEngine {
             guard cfg.channels.contains(where: { $0.id == channelID }) else { return }
 
             // Wait for the channel to go live (and, if a tag filter is set, for a
-            // live whose tags match it).
+            // live whose tags match it). The timeout is re-clamped here because the
+            // settings UI can briefly hold an out-of-range value before its own
+            // clamping kicks in, and UInt64(negative) would crash.
+            let waitSeconds = UInt64(max(1, cfg.timeout))
             var live: LiveInfo?
             var loggedTagSkip = false
+            var loggedNoMedia = false
             while !Task.isCancelled {
                 let pollConfig = currentConfig()
                 let channel = pollConfig.channels.first(where: { $0.id == channelID })
@@ -177,24 +181,38 @@ final class RecordingEngine {
                     info = nil
                 }
                 if let info, info.status == "OPEN" {
+                    // OPEN but no playback media (adult stream without auth, region
+                    // block, …): streamlink would fail instantly and the transient
+                    // retry would spin forever, so wait here instead.
+                    if !info.hasMedia {
+                        if !loggedNoMedia {
+                            onLog?("'\(channelName)' 방송 재생 정보를 가져올 수 없어 대기합니다"
+                                   + (info.adult ? " (성인 인증 방송 — 쿠키를 확인하세요)." : "."))
+                            loggedNoMedia = true
+                        }
+                        await sleepOrWake(channelID: channelID, seconds: waitSeconds)
+                        continue
+                    }
+                    loggedNoMedia = false
                     if let channel, !channel.acceptsTags(info.tags) {
                         if !loggedTagSkip {
                             let tagText = info.tags.isEmpty ? "없음" : info.tags.joined(separator: ", ")
                             onLog?("'\(channelName)' 방송 중이지만 태그가 일치하지 않아 건너뜁니다 (방송 태그: \(tagText)).")
                             loggedTagSkip = true
                         }
-                        await sleepOrWake(channelID: channelID, seconds: UInt64(cfg.timeout))
+                        await sleepOrWake(channelID: channelID, seconds: waitSeconds)
                         continue
                     }
                     live = info
                     break
                 }
                 loggedTagSkip = false
+                loggedNoMedia = false
                 if info?.status == "BLOCK" {
                     onLog?("'\(channelName)' 채널이 차단되었습니다.")
                 }
                 onLog?("'\(channelName)' 채널의 방송 시작을 기다리는 중…")
-                await sleepOrWake(channelID: channelID, seconds: UInt64(cfg.timeout))
+                await sleepOrWake(channelID: channelID, seconds: waitSeconds)
             }
             guard !Task.isCancelled, let liveInfo = live else { return }
 
@@ -231,7 +249,7 @@ final class RecordingEngine {
             // Recorded for a while -> the broadcast has ended.
             consecutiveFailures = 0
             if oneShot { return }
-            await sleepOrWake(channelID: channelID, seconds: UInt64(cfg.timeout))
+            await sleepOrWake(channelID: channelID, seconds: UInt64(max(1, cfg.timeout)))
         }
     }
 
@@ -271,7 +289,7 @@ final class RecordingEngine {
         let title = Validate.sanitizeFilename(liveInfo.liveTitle, fallback: "untitled")
         let stampForName = now.replacingOccurrences(of: ":", with: "_")
         let baseName = Filename.shortenedComponent("[\(stampForName)] \(channelName) \(title).\(format)")
-        let outputDir = resolveOutputDir(channel.output_dir)
+        let outputDir = Self.resolveOutputDir(channel.output_dir)
         try? FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
         // Guard against a vanished/read-only destination (e.g. an unplugged external
         // drive) so we surface a clear error instead of silently failing to write.
@@ -368,19 +386,26 @@ final class RecordingEngine {
             onLog?("\(channelName) 녹화를 종료했습니다.")
         }
 
-        // Atomically rename temp -> final (unique).
+        // Atomically rename temp -> final (unique). Only report success when the
+        // rename actually succeeded — otherwise the file is still a .part and a
+        // "saved" notification would be a lie.
         if FileManager.default.fileExists(atPath: tempURL.path) {
-            let dest = uniquePath(finalURL)
-            try? FileManager.default.moveItem(at: tempURL, to: dest)
-            onLog?("녹화 파일 저장: \(dest.path)")
-            onSaved?(channelName, dest.path, split)
+            let dest = Self.uniquePath(finalURL)
+            do {
+                try FileManager.default.moveItem(at: tempURL, to: dest)
+                onLog?("녹화 파일 저장: \(dest.path)")
+                onSaved?(channelName, dest.path, split)
+            } catch {
+                onLog?("\(channelName) 녹화 파일 이름 변경 실패: \(error.localizedDescription)"
+                       + " — 임시 파일로 남아 있습니다: \(tempURL.path)")
+            }
         }
         return split
     }
 
     // MARK: filename helpers
 
-    private func resolveOutputDir(_ value: String) -> URL {
+    static func resolveOutputDir(_ value: String) -> URL {
         let text = Validate.normalizeRecordingOutputDir(value)
         let expanded = (text as NSString).expandingTildeInPath
         let url = URL(fileURLWithPath: expanded)
@@ -392,7 +417,7 @@ final class RecordingEngine {
         return text == "." ? movies : movies.appendingPathComponent(text)
     }
 
-    private func uniquePath(_ url: URL) -> URL {
+    static func uniquePath(_ url: URL) -> URL {
         if !FileManager.default.fileExists(atPath: url.path) { return url }
         let stem = url.deletingPathExtension().lastPathComponent
         let ext = url.pathExtension
@@ -403,6 +428,30 @@ final class RecordingEngine {
             if !FileManager.default.fileExists(atPath: candidate.path) { return candidate }
         }
         return url
+    }
+
+    /// Renames orphaned `[timestamp] ….part` recordings (left behind by a crash or
+    /// force quit) to their playable final names. Safe to call at launch, before any
+    /// recording starts. Returns the recovered file names.
+    static func salvageOrphanParts(outputDirs: [String]) -> [String] {
+        let fm = FileManager.default
+        var salvaged: [String] = []
+        var visited = Set<String>()
+        for dirValue in outputDirs {
+            let dir = resolveOutputDir(dirValue)
+            guard visited.insert(dir.path).inserted,
+                  let entries = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+            else { continue }
+            for url in entries {
+                let name = url.lastPathComponent
+                guard name.hasPrefix("["), name.hasSuffix(".part") else { continue }
+                let dest = uniquePath(dir.appendingPathComponent(String(name.dropLast(".part".count))))
+                if (try? fm.moveItem(at: url, to: dest)) != nil {
+                    salvaged.append(dest.lastPathComponent)
+                }
+            }
+        }
+        return salvaged
     }
 
     private static func fileSize(_ url: URL) -> Int64 {

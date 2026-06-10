@@ -3,7 +3,7 @@ import re
 import time
 from typing import Any, Dict, Tuple, Union, TypedDict, Optional, List
 from dataclasses import dataclass
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from urllib.parse import urlparse, urlunparse
 
 from streamlink.exceptions import StreamError
 from streamlink.plugin import Plugin, pluginmatcher
@@ -39,7 +39,7 @@ class ChzzkHLSStreamWorker(HLSStreamWorker):
                 last_err = err
                 if attempt >= 1:
                     break
-                log.debug(f"Playlist fetch failed, refreshing stream URL: {err}")
+                log.warning(f"Playlist fetch failed, refreshing stream URL: {err}")
                 try:
                     self.stream.refresh_playlist()
                     log.debug("Refreshed the channel playlist after a fetch error.")
@@ -74,6 +74,7 @@ class ChzzkHLSStream(HLSStream):
         self._api = ChzzkAPI(session)
         self._expire = self._get_expire_time(url)
         self._last_proactive_refresh = 0.0
+        self._refresh_interval = 60.0
 
     def refresh_playlist(self) -> None:
         """
@@ -124,20 +125,6 @@ class ChzzkHLSStream(HLSStream):
             return urlunparse(parsed._replace(netloc="nlive-streaming.navercdn.com"))
         return url
 
-    def _replace_token(self, new_url: str) -> None:
-        """
-        Replace the token in the current URL with the token from the new URL.
-        """
-        parsed_old = urlparse(self._url)
-        parsed_new = urlparse(new_url)
-        qs_old = parse_qs(parsed_old.query)
-        qs_new = parse_qs(parsed_new.query)
-        # Replace the 'hdnts' parameter with the new token
-        if "hdnts" in qs_new:
-            qs_old["hdnts"] = qs_new.get("hdnts")
-        new_query = urlencode(qs_old, doseq=True)
-        self._url = urlunparse(parsed_old._replace(query=new_query))
-
     def _get_expire_time(self, url: str) -> Optional[int]:
         """
         Extract the token expiration timestamp from the URL. Chzzk has used several
@@ -166,16 +153,19 @@ class ChzzkHLSStream(HLSStream):
 
     @property
     def url(self) -> str:
-        # Proactively refresh at most once per minute (a refresh may not push exp past
-        # the threshold, so this prevents a refresh storm), and never let a refresh
-        # failure propagate — this property is read on the worker thread, so fall back
-        # to the current URL and let the _fetch_playlist retry path handle real expiry.
-        if self._should_refresh() and (time.time() - self._last_proactive_refresh) >= 60:
+        # Proactive refresh, rate-limited. Never let a refresh failure propagate —
+        # this property is read on the worker thread, so fall back to the current
+        # URL and let the _fetch_playlist retry path handle real expiry.
+        if self._should_refresh() and (time.time() - self._last_proactive_refresh) >= self._refresh_interval:
             self._last_proactive_refresh = time.time()
             try:
                 self.refresh_playlist()
+                # If even a fresh token expires within the threshold, the CDN is
+                # issuing short-lived tokens: back off so this does not turn into a
+                # refresh-every-minute loop. Reset once tokens are long-lived again.
+                self._refresh_interval = 600.0 if self._should_refresh() else 60.0
             except Exception as err:  # noqa: BLE001
-                log.debug(f"Proactive stream URL refresh failed, keeping current URL: {err}")
+                log.warning(f"Proactive stream URL refresh failed, keeping current URL: {err}")
         return self._url
 
 

@@ -162,6 +162,44 @@ final class CoreLogicTests: XCTestCase {
         XCTAssertFalse(AppModel.shouldNudgeArmedRecording(isLive: false, isArmed: true, isWriting: false))
         XCTAssertFalse(AppModel.shouldNudgeArmedRecording(isLive: true, isArmed: false, isWriting: false))
         XCTAssertFalse(AppModel.shouldNudgeArmedRecording(isLive: true, isArmed: true, isWriting: true))
+        XCTAssertFalse(AppModel.shouldNudgeArmedRecording(
+            isLive: true, isArmed: true, isWriting: false, canRecord: false))
+    }
+
+    func testAuthFailureHeuristicAvoidsFalsePositivesFromURLsAndSizes() {
+        // Real auth failures.
+        XCTAssertTrue(ChzzkAPI.looksLikeAuthFailure("Unable to open URL: ... (401 Client Error: Unauthorized)"))
+        XCTAssertTrue(ChzzkAPI.looksLikeAuthFailure("HTTP 403 Forbidden"))
+        XCTAssertTrue(ChzzkAPI.looksLikeAuthFailure("ADULT_AUTH_REQUIRED"))
+        XCTAssertTrue(ChzzkAPI.looksLikeAuthFailure("invalid cookie value"))
+
+        // Lines that merely contain cookie/digit substrings must not trigger.
+        XCTAssertFalse(ChzzkAPI.looksLikeAuthFailure("Opening stream with --http-cookie header"))
+        XCTAssertFalse(ChzzkAPI.looksLikeAuthFailure("쿠키 설정을 적용했습니다"))
+        XCTAssertFalse(ChzzkAPI.looksLikeAuthFailure("downloaded 14013 bytes"))
+        XCTAssertFalse(ChzzkAPI.looksLikeAuthFailure("segment https://cdn.example.com/x401y/seg.ts"))
+        XCTAssertFalse(ChzzkAPI.looksLikeAuthFailure("로그인 화면을 건너뜁니다"))
+    }
+
+    func testSalvageOrphanPartsRecoversCrashLeftovers() throws {
+        let dir = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let orphan = dir.appendingPathComponent("[2026-06-10 12_00_00] ch title.ts.part")
+        let collision = dir.appendingPathComponent("[2026-06-10 12_00_00] ch title.ts")
+        let unrelated = dir.appendingPathComponent("note.part")   // no "[" prefix -> untouched
+        try Data("a".utf8).write(to: orphan)
+        try Data("b".utf8).write(to: collision)
+        try Data("c".utf8).write(to: unrelated)
+
+        let salvaged = RecordingEngine.salvageOrphanParts(outputDirs: [dir.path])
+
+        XCTAssertEqual(salvaged.count, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: unrelated.path))
+        // Existing final file is preserved; the orphan gets a unique "_1" name.
+        XCTAssertEqual(try String(contentsOf: collision, encoding: .utf8), "b")
+        XCTAssertTrue(salvaged[0].contains("_1"))
     }
 
     func testTagFilterParsingTrimsDedupesAndCaps() {
@@ -314,7 +352,7 @@ final class CoreLogicTests: XCTestCase {
         let updateGuide = BundledSupportDocument.read(.githubUpdates)
 
         XCTAssertTrue(changelog?.contains("# Changelog") == true)
-        XCTAssertTrue(notices?.contains("# Third-Party Notices") == true)
+        XCTAssertTrue(notices?.contains("# 오픈소스 고지") == true)
         XCTAssertTrue(license?.contains("GNU GENERAL PUBLIC LICENSE") == true)
         XCTAssertTrue(updateGuide?.contains("Sparkle") == true)
     }

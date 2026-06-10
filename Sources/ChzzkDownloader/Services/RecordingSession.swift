@@ -76,7 +76,21 @@ final class RecordingSession {
     func terminate() {
         if ffmpeg.isRunning { ffmpeg.terminate() }
         if streamlink.isRunning { streamlink.terminate() }
-        if !ffmpeg.isRunning { finish() }
+        if !ffmpeg.isRunning {
+            finish()
+            return
+        }
+        // SIGTERM can be ignored by a process stuck in I/O. Escalate to SIGKILL,
+        // and unblock waitUntilExit() even if the process refuses to die, so the
+        // per-channel recording task never hangs forever.
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 5 * 1_000_000_000)
+            guard let self else { return }
+            if self.ffmpeg.isRunning { kill(self.ffmpeg.processIdentifier, SIGKILL) }
+            if self.streamlink.isRunning { kill(self.streamlink.processIdentifier, SIGKILL) }
+            try? await Task.sleep(nanoseconds: 2 * 1_000_000_000)
+            self.finish()
+        }
     }
 
     private func finish() {

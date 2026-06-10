@@ -7,6 +7,9 @@ struct LiveInfo {
     var adult: Bool
     var tags: [String] = []
     var category: String = ""  // liveCategoryValue (human-readable game/category name)
+    /// False when the live is OPEN but exposes no playback media (adult stream
+    /// without auth, region block, …) — streamlink would fail instantly.
+    var hasMedia: Bool = true
 }
 
 enum LiveInfoFetchResult {
@@ -66,9 +69,10 @@ enum ChzzkAPI {
             }
             let tags = (content["tags"] as? [Any])?.compactMap { $0 as? String } ?? []
             let category = content["liveCategoryValue"] as? String ?? ""
+            let hasMedia = (content["livePlaybackJson"] as? String).map { !$0.isEmpty } ?? false
             return .info(LiveInfo(
                 status: status, liveTitle: title, channelName: channelName,
-                adult: adult, tags: tags, category: category))
+                adult: adult, tags: tags, category: category, hasMedia: hasMedia))
         } catch {
             return .info(nil)
         }
@@ -78,17 +82,20 @@ enum ChzzkAPI {
         statusCode == 401 || statusCode == 403
     }
 
+    /// Heuristic over error/log text. Deliberately narrow: this runs on every
+    /// streamlink stderr line, so bare substrings like "cookie" or "403" inside a
+    /// URL/size would otherwise raise false "re-import cookies" warnings.
     static func looksLikeAuthFailure(_ text: String) -> Bool {
         let lower = text.lowercased()
-        return lower.contains("401")
-            || lower.contains("403")
-            || lower.contains("unauthorized")
+        if lower.contains("unauthorized")
             || lower.contains("forbidden")
             || lower.contains("adult_auth_required")
             || lower.contains("invalid cookie")
-            || lower.contains("cookie")
-            || lower.contains("쿠키")
-            || lower.contains("인증")
-            || lower.contains("로그인")
+            || lower.contains("쿠키가 유효하지")
+            || lower.contains("로그인이 필요") {
+            return true
+        }
+        // Status codes only as standalone tokens (e.g. "HTTP 403", "error 401").
+        return lower.range(of: #"\b40[13]\b"#, options: .regularExpression) != nil
     }
 }
