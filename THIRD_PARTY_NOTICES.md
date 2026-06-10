@@ -1,33 +1,30 @@
-# Third-Party Notices
+# 오픈소스 고지
 
-This app is an unofficial tool for CHZZK recording and VOD downloading. It is
-not affiliated with NAVER or CHZZK.
+이 앱은 CHZZK 녹화 및 VOD 다운로드를 위한 비공식 도구입니다. NAVER 또는 CHZZK와 관련이 없습니다.
 
 ## Sparkle
 
-- Project: https://github.com/sparkle-project/Sparkle
-- Purpose: macOS app update framework
-- License: MIT License
+- 프로젝트: https://github.com/sparkle-project/Sparkle
+- 용도: macOS 앱 자동 업데이트 프레임워크
+- 라이선스: MIT License
 
-## Streamlink Chzzk Plugin
+## Streamlink Chzzk 플러그인
 
-- Project: https://github.com/streamlink/streamlink
-- Bundled file: `Sources/ChzzkDownloader/Resources/plugin/chzzk.py`
-- Purpose: resolves CHZZK live streams for Streamlink
-- License: BSD-2-Clause License, as used by Streamlink
+- 프로젝트: https://github.com/streamlink/streamlink
+- 번들 파일: `Sources/ChzzkDownloader/Resources/plugin/chzzk.py`
+- 용도: CHZZK 라이브 스트림 URL 해석
+- 라이선스: BSD-2-Clause License (Streamlink 프로젝트 기준)
 
-## External Tools
+## 외부 도구
 
-The app invokes user-installed command line tools when present. These tools are
-not bundled in the app package:
+앱은 사용자가 별도로 설치한 커맨드라인 도구를 실행합니다. 이 도구들은 앱 번들에 포함되지 않습니다.
 
 - ffmpeg: https://ffmpeg.org
 - streamlink: https://streamlink.github.io
 
-## Inspired Projects
+## 참고한 프로젝트
 
-The macOS app behavior is inspired by these projects, but it is a Swift
-reimplementation rather than a direct embedding of their Python applications:
+앱의 동작 방식은 아래 프로젝트에서 영감을 받았습니다. Python 소스를 직접 포함한 것이 아닌 Swift로 새로 구현한 것입니다.
 
-- Chzzk-Rekoda by munsy0227: https://github.com/munsy0227/Chzzk-Rekoda
-- chzzk-vod-downloader-v2 by honey720: https://github.com/honey720/chzzk-vod-downloader-v2
+- Chzzk-Rekoda (munsy0227): https://github.com/munsy0227/Chzzk-Rekoda
+- chzzk-vod-downloader-v2 (honey720): https://github.com/honey720/chzzk-vod-downloader-v2

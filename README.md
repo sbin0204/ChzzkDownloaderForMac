@@ -63,8 +63,4 @@ xattr -dr com.apple.quarantine "/Applications/Chzzk Downloader for Mac.app"
 
 ## 라이선스
 
-Copyright (C) 2026 sbin0204
-
 이 프로그램은 자유 소프트웨어입니다. **GNU General Public License v3.0**(GPLv3) 조건에 따라 재배포·수정할 수 있습니다. 전체 라이선스 본문은 [`LICENSE`](LICENSE)를 참고하세요. 번들된 오픈소스 구성요소(Sparkle, Streamlink 플러그인 등)의 고지는 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)에 있습니다.
-
-This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License v3.0 as published by the Free Software Foundation. It is distributed WITHOUT ANY WARRANTY. See [`LICENSE`](LICENSE) for details.
