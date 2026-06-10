@@ -24,7 +24,7 @@
 
 ## 참고한 프로젝트
 
-앱의 동작 방식은 아래 프로젝트에서 영감을 받았습니다. Python 소스를 직접 포함한 것이 아닌 Swift로 새로 구현한 것입니다.
+앱의 동작 방식은 아래 프로젝트에서 영감을 받았습니다.
 
 - Chzzk-Rekoda (munsy0227): https://github.com/munsy0227/Chzzk-Rekoda
 - chzzk-vod-downloader-v2 (honey720): https://github.com/honey720/chzzk-vod-downloader-v2
