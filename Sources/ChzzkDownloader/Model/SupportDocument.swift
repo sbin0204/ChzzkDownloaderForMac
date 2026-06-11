@@ -4,14 +4,12 @@ enum SupportDocument: CaseIterable {
     case license
     case thirdPartyNotices
     case changelog
-    case githubUpdates
 
     var title: String {
         switch self {
         case .license: return "앱 라이선스"
         case .thirdPartyNotices: return "오픈소스 고지"
         case .changelog: return "변경 사항"
-        case .githubUpdates: return "GitHub 업데이트 준비"
         }
     }
 
@@ -20,8 +18,6 @@ enum SupportDocument: CaseIterable {
         case .license: return "LICENSE"
         case .thirdPartyNotices: return "THIRD_PARTY_NOTICES.md"
         case .changelog: return "CHANGELOG.md"
-        case .githubUpdates:
-            return "UPDATE_GITHUB.\(AppLocalization.documentLanguageCode).md"
         }
     }
 
@@ -30,7 +26,6 @@ enum SupportDocument: CaseIterable {
         case .license: return "LICENSE 문서를 찾을 수 없습니다."
         case .thirdPartyNotices: return "THIRD_PARTY_NOTICES.md 문서를 찾을 수 없습니다."
         case .changelog: return "CHANGELOG.md 문서를 찾을 수 없습니다."
-        case .githubUpdates: return "GitHub 업데이트 준비 문서를 찾을 수 없습니다."
         }
     }
 }

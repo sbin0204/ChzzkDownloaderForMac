@@ -114,6 +114,16 @@ struct ChzzkDownloaderApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @State private var model = AppModel()
 
+    /// Menu bar template icon. Loaded from the app bundle (build_app.sh copies
+    /// MenuBarIcon.png/@2x into Contents/Resources); falls back to the SF Symbol
+    /// when running outside the assembled bundle (e.g. `swift run`).
+    private static let menuBarIcon: NSImage = {
+        let image = Bundle.main.image(forResource: "MenuBarIcon")
+            ?? NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: "Chzzk Downloader")!
+        image.isTemplate = true
+        return image
+    }()
+
     var body: some Scene {
         // A singleton `Window` (not `WindowGroup`): closing the window only hides it
         // (WindowIdentifierMarker.hidesOnClose) and reopening reveals that same
@@ -163,11 +173,13 @@ struct ChzzkDownloaderApp: App {
         .windowResizability(.contentMinSize)
         .defaultSize(width: 1040, height: 720)
 
-        MenuBarExtra("Chzzk Downloader", systemImage: "bolt.fill") {
+        MenuBarExtra {
             MenuBarStatusView()
                 .environment(model)
                 .environment(\.locale, AppLocalization.locale)
                 .onAppear { appDelegate.model = model }
+        } label: {
+            Image(nsImage: Self.menuBarIcon)
         }
         .menuBarExtraStyle(.menu)
     }

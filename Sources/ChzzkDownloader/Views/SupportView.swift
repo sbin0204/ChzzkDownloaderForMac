@@ -138,6 +138,9 @@ private struct AboutPane: View {
                         .font(.title.weight(.semibold))
                     Text("버전 \(AppVersion.short) (\(AppVersion.build))")
                         .foregroundStyle(.secondary)
+                    Link("github.com/sbin0204/ChzzkDownloaderForMac",
+                         destination: URL(string: "https://github.com/sbin0204/ChzzkDownloaderForMac")!)
+                        .font(.caption)
                 }
             }
 
