@@ -1,0 +1,15 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Chzzk Downloader for Mac</title>
+        <item>
+            <sparkle:releaseNotesLink>https://sbin0204.github.io/ChzzkDownloaderForMac/changelog.html</sparkle:releaseNotesLink>
+            <title>1.2.0</title>
+            <pubDate>Thu, 11 Jun 2026 18:57:40 +0900</pubDate>
+            <sparkle:version>1.2.0</sparkle:version>
+            <sparkle:shortVersionString>1.2.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sbin0204/ChzzkDownloaderForMac/releases/download/v1.2.0/ChzzkDownloaderForMac-1.2.0.dmg" length="4771588" type="application/octet-stream" sparkle:edSignature="GKbO9IZAVvbl3krEwMsgZvFXb9yqlALY8MPMRf0VL2rnTHiEccKLpBidhAPvU2CkCjpnnGPiln7DDsENtpKODA=="/>
+        </item>
+    </channel>
+</rss>
