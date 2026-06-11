@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.0
+
+- Added live broadcast category and tag display in the dashboard for channels that are currently live.
+- Added optional stop-on-tag-mismatch toggle per channel: when enabled, recording stops gracefully if the broadcast tags change and no longer match the configured tag filter.
+- Fixed a race condition where a recording file could be left with a `.part` extension if the app crashed mid-recording; orphaned parts are recovered automatically on next launch.
+- Fixed process cleanup: ffmpeg now receives SIGKILL after a 5-second grace period if it does not exit after SIGTERM, preventing zombie processes.
+- Fixed adult/media-unavailable streams from retrying too aggressively; the engine now waits the configured timeout interval before re-checking.
+- Narrowed the auth-failure heuristic to avoid false positives from CDN URLs and normal log lines that happen to contain cookie-related words.
+
 ## 1.1.0
 
 - Added monitoring state persistence: channels being watched when the app closes resume monitoring on next launch.

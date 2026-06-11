@@ -6,9 +6,9 @@
     "minimumMacOS": "14.0"
   },
   "version": {
-    "marketing": "1.1.0",
-    "build": "1.1.0",
-    "changelogHeading": "1.1.0"
+    "marketing": "1.2.0",
+    "build": "1.2.0",
+    "changelogHeading": "1.2.0"
   },
   "distribution": {
     "dmgBaseName": "ChzzkDownloaderForMac",
