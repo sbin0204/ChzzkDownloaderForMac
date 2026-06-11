@@ -354,6 +354,31 @@ final class RecordingEngine {
             self?.onLog?("\(channelName) 녹화 시간이 \(config.live_split_duration_minutes)분에 도달해 새 파일로 분할합니다.")
             session?.requestFinish()
         } : nil
+        // Optional mid-broadcast tag watch: when the channel asks for it, finalize
+        // the recording once the live's tags stop matching the filter. Config is
+        // re-read every tick so toggling the option or editing tags mid-recording
+        // applies without restarting the session.
+        let tagMonitor = Task { [weak self, weak session] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)
+                if Task.isCancelled { return }
+                guard let self, let session else { return }
+                let cfg = self.currentConfig()
+                guard let current = cfg.channels.first(where: { $0.id == channelID }),
+                      current.stop_on_tag_mismatch, !current.tag_filter.isEmpty else { continue }
+                // Only a definitive OPEN status with non-matching tags stops the
+                // recording — transport errors or CLOSE are left to the stream's
+                // natural end so a flaky network can never cut a recording short.
+                guard case .info(let info?) = await ChzzkAPI.fetchLiveInfoResult(
+                          channelID: channelID, cookies: cfg.cookies),
+                      info.status == "OPEN",
+                      current.shouldStopOnTagMismatch(info.tags) else { continue }
+                let tagText = info.tags.isEmpty ? "없음" : info.tags.joined(separator: ", ")
+                self.onLog?("\(channelName) 방송 태그가 더 이상 일치하지 않아 녹화를 중단합니다 (현재 태그: \(tagText)).")
+                session.requestFinish()
+                return
+            }
+        }
 
         do {
             try session.start(
@@ -372,6 +397,7 @@ final class RecordingEngine {
         }
         splitMonitor?.cancel()
         timeSplitMonitor?.cancel()
+        tagMonitor.cancel()
 
         session.terminate()
         state.update { $0.sessions.removeValue(forKey: channelID) }

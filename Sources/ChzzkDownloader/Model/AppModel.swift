@@ -1027,7 +1027,7 @@ final class AppModel {
 
     /// Adds a channel after validating the ID format and rejecting duplicates.
     func addChannel(id: String, name: String, outputDir: String, quality: String = Defaults.liveQuality,
-                    tagFilter: [String] = []) -> ChannelEditResult {
+                    tagFilter: [String] = [], stopOnTagMismatch: Bool = false) -> ChannelEditResult {
         let cid = id.trimmingCharacters(in: .whitespaces)
         guard Validate.matches(Validate.safeChannelID, cid) else { return .invalidID }
         guard !config.channels.contains(where: { $0.id == cid }) else { return .duplicateID }
@@ -1035,7 +1035,8 @@ final class AppModel {
             id: cid, name: name.trimmingCharacters(in: .whitespaces).isEmpty ? cid : name.trimmingCharacters(in: .whitespaces),
             output_dir: Validate.normalizeRecordingOutputDir(outputDir),
             quality: quality,
-            tag_filter: tagFilter))
+            tag_filter: tagFilter,
+            stop_on_tag_mismatch: stopOnTagMismatch))
         return .ok
     }
 
@@ -1043,7 +1044,8 @@ final class AppModel {
     /// that collides with a *different* channel.
     func updateChannel(
         originalID: String, id: String, name: String, outputDir: String,
-        quality: String = Defaults.liveQuality, tagFilter: [String] = []
+        quality: String = Defaults.liveQuality, tagFilter: [String] = [],
+        stopOnTagMismatch: Bool = false
     ) -> ChannelEditResult {
         guard let i = config.channels.firstIndex(where: { $0.id == originalID }) else { return .invalidID }
         let cid = id.trimmingCharacters(in: .whitespaces)
@@ -1062,6 +1064,7 @@ final class AppModel {
         config.channels[i].output_dir = Validate.normalizeRecordingOutputDir(outputDir)
         config.channels[i].quality = Validate.normalizeLiveQuality(quality)
         config.channels[i].tag_filter = Validate.normalizeTagFilter(tagFilter)
+        config.channels[i].stop_on_tag_mismatch = stopOnTagMismatch
         if cid != originalID {
             config.schedules = SchedulePlanner.renameChannelReferences(
                 schedules: config.schedules,

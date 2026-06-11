@@ -158,18 +158,22 @@ struct Channel: Codable, Identifiable, Hashable {
     var quality: String = Defaults.liveQuality
     /// Record only when the live's tags match one of these (empty = always record).
     var tag_filter: [String] = []
+    /// When on (and a tag filter is set), an in-progress recording is finalized
+    /// once the live's tags stop matching the filter.
+    var stop_on_tag_mismatch: Bool = false
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, output_dir, quality, tag_filter
+        case id, name, output_dir, quality, tag_filter, stop_on_tag_mismatch
     }
 
     init(id: String, name: String, output_dir: String, quality: String = Defaults.liveQuality,
-         tag_filter: [String] = []) {
+         tag_filter: [String] = [], stop_on_tag_mismatch: Bool = false) {
         self.id = id
         self.name = name
         self.output_dir = output_dir
         self.quality = Validate.normalizeLiveQuality(quality)
         self.tag_filter = Validate.normalizeTagFilter(tag_filter)
+        self.stop_on_tag_mismatch = stop_on_tag_mismatch
     }
 
     init(from decoder: Decoder) throws {
@@ -181,6 +185,7 @@ struct Channel: Codable, Identifiable, Hashable {
             try c.decodeIfPresent(String.self, forKey: .quality) ?? Defaults.liveQuality)
         tag_filter = Validate.normalizeTagFilter(
             try c.decodeIfPresent([String].self, forKey: .tag_filter) ?? [])
+        stop_on_tag_mismatch = try c.decodeIfPresent(Bool.self, forKey: .stop_on_tag_mismatch) ?? false
     }
 
     /// True when this channel's tag filter accepts a live with the given tags
@@ -189,6 +194,12 @@ struct Channel: Codable, Identifiable, Hashable {
         guard !tag_filter.isEmpty else { return true }
         let liveTags = Set(tags.map { $0.trimmingCharacters(in: .whitespaces).lowercased() })
         return tag_filter.contains { liveTags.contains($0.lowercased()) }
+    }
+
+    /// True when an in-progress recording should stop because the live's tags no
+    /// longer match the filter (only meaningful with the option on and a filter set).
+    func shouldStopOnTagMismatch(_ tags: [String]) -> Bool {
+        stop_on_tag_mismatch && !tag_filter.isEmpty && !acceptsTags(tags)
     }
 }
 

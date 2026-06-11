@@ -226,6 +226,21 @@ final class CoreLogicTests: XCTestCase {
         XCTAssertFalse(filtered.acceptsTags([]))                  // no tags can't match a filter
     }
 
+    func testStopOnTagMismatchRequiresOptionFilterAndActualMismatch() {
+        let optionOff = Channel(id: "c", name: "n", output_dir: ".", tag_filter: ["asmr"])
+        XCTAssertFalse(optionOff.shouldStopOnTagMismatch(["게임"]))
+
+        let optionOn = Channel(id: "c", name: "n", output_dir: ".",
+                               tag_filter: ["asmr"], stop_on_tag_mismatch: true)
+        XCTAssertTrue(optionOn.shouldStopOnTagMismatch(["게임"]))         // mismatch -> stop
+        XCTAssertTrue(optionOn.shouldStopOnTagMismatch([]))               // tags removed -> stop
+        XCTAssertFalse(optionOn.shouldStopOnTagMismatch(["ASMR", "게임"])) // still matches -> keep
+
+        let noFilter = Channel(id: "c", name: "n", output_dir: ".",
+                               tag_filter: [], stop_on_tag_mismatch: true)
+        XCTAssertFalse(noFilter.shouldStopOnTagMismatch(["게임"]))         // option inert without filter
+    }
+
     func testNormalizeDropsArmedChannelsWithoutAMatchingChannel() {
         var config = Config()
         config.channels = [Channel(id: "live1", name: "n", output_dir: ".")]
