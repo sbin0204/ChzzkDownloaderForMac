@@ -51,6 +51,26 @@ pipx install streamlink
 xattr -dr com.apple.quarantine "/Applications/Chzzk Downloader for Mac.app"
 ```
 
+## 소스에서 빌드
+
+Xcode 명령줄 도구(또는 Xcode)가 설치되어 있으면 됩니다. 의존성(Sparkle)은 SwiftPM이 자동으로 받습니다.
+
+```bash
+git clone https://github.com/sbin0204/ChzzkDownloaderForMac.git
+cd ChzzkDownloaderForMac
+
+# 테스트
+swift test
+
+# 앱 번들 생성 → "Chzzk Downloader for Mac.app"
+./build_app.sh
+
+# 배포용 유니버설(arm64+x86_64) DMG 생성
+./package_dmg.sh
+```
+
+자동 업데이트(Sparkle)가 켜진 배포 빌드를 만들려면 `SPARKLE_FEED_URL`과 `SPARKLE_PUBLIC_ED_KEY` 환경변수를 설정한 뒤 `./package_dmg.sh`를 실행하세요. 자세한 릴리즈 절차는 [`docs/MAINTAINING.md`](docs/MAINTAINING.md)를 참고하세요.
+
 ## 쿠키 안내
 
 성인 인증이 필요한 VOD나 일부 제한 콘텐츠는 네이버 로그인 쿠키가 필요합니다. 앱의 쿠키 설정 화면에서 브라우저 쿠키를 불러오거나 직접 `NID_AUT`, `NID_SES` 값을 입력하세요.
