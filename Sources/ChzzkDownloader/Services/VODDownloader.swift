@@ -58,10 +58,17 @@ final class VODDownloader {
             "-rw_timeout", "15000000",
             "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
         ]
-        return ["-y", "-user_agent", VODRequestHeaders.userAgent] + ProxySupport.ffmpegArgs()
-            + reconnectArgs + seekPre + ["-headers", VODRequestHeaders.ffmpegHeaders(cookies: cookies), "-i", variantURL]
-            + durArgs + copyStreamArgs(audioOnly: audioOnly)
-            + ["-progress", "pipe:2", "-f", muxer, partURL.path]
+        // Built incrementally: one long `+` chain makes the type checker time out
+        // on slower toolchains (e.g. the CI runner).
+        var args: [String] = ["-y", "-user_agent", VODRequestHeaders.userAgent]
+        args += ProxySupport.ffmpegArgs()
+        args += reconnectArgs
+        args += seekPre
+        args += ["-headers", VODRequestHeaders.ffmpegHeaders(cookies: cookies), "-i", variantURL]
+        args += durArgs
+        args += copyStreamArgs(audioOnly: audioOnly)
+        args += ["-progress", "pipe:2", "-f", muxer, partURL.path]
+        return args
     }
 
     static func copyStreamArgs(audioOnly: Bool) -> [String] {
@@ -608,8 +615,12 @@ final class VODDownloader {
             let streamArgs = transcodeAudio
                 ? Self.aacFallbackStreamArgs(audioOnly: audioOnly)
                 : Self.copyStreamArgs(audioOnly: audioOnly)
-            let args = ["-y"] + seekArgs + localHLSArgs + durArgs + streamArgs
-                + ["-progress", "pipe:2", "-f", muxer, processedPartURL.path]
+            var args: [String] = ["-y"]
+            args += seekArgs
+            args += localHLSArgs
+            args += durArgs
+            args += streamArgs
+            args += ["-progress", "pipe:2", "-f", muxer, processedPartURL.path]
 
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: ffmpegPath)
