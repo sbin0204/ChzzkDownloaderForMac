@@ -451,7 +451,7 @@ final class CoreLogicTests: XCTestCase {
         XCTAssertFalse(UpdateService.isUsableFeedURL(URL(string: "https:///appcast.xml")!))
     }
 
-    func testLocalizationResourcesAndGitHubUpdateGuideAreBundled() throws {
+    func testLocalizationResourcesAndBundledDocumentsArePresent() throws {
         let enStrings = try XCTUnwrap(Bundle.module.url(
             forResource: "Localizable",
             withExtension: "strings",
@@ -464,8 +464,7 @@ final class CoreLogicTests: XCTestCase {
         XCTAssertEqual(strings["대시보드"], "Dashboard")
         XCTAssertEqual(strings["업데이트 확인…"], "Check for Updates...")
 
-        XCTAssertNotNil(bundledModuleDocument("UPDATE_GITHUB.en.md"))
-        XCTAssertNotNil(bundledModuleDocument("UPDATE_GITHUB.ko.md"))
+        XCTAssertNotNil(bundledModuleDocument("changelog.html"))
     }
 
     func testSchedulePlannerStartsOneShotAndRemovesSchedule() {
