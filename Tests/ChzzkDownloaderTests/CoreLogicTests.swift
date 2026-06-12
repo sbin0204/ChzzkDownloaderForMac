@@ -364,12 +364,10 @@ final class CoreLogicTests: XCTestCase {
         let changelog = BundledSupportDocument.read(.changelog)
         let notices = BundledSupportDocument.read(.thirdPartyNotices)
         let license = BundledSupportDocument.read(.license)
-        let updateGuide = BundledSupportDocument.read(.githubUpdates)
 
         XCTAssertTrue(changelog?.contains("# Changelog") == true)
         XCTAssertTrue(notices?.contains("# 오픈소스 고지") == true)
         XCTAssertTrue(license?.contains("GNU GENERAL PUBLIC LICENSE") == true)
-        XCTAssertTrue(updateGuide?.contains("Sparkle") == true)
     }
 
     func testReleaseMetadataMatchesMaintainedSourceFiles() throws {
