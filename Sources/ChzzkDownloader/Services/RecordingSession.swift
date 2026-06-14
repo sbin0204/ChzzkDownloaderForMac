@@ -82,9 +82,12 @@ final class RecordingSession {
         }
         // SIGTERM can be ignored by a process stuck in I/O. Escalate to SIGKILL,
         // and unblock waitUntilExit() even if the process refuses to die, so the
-        // per-channel recording task never hangs forever.
+        // per-channel recording task never hangs forever. The grace period is
+        // generous because, on SIGTERM, ffmpeg is finalizing the container trailer
+        // (e.g. MKV cues for a multi-hour file) — killing it mid-write produces a
+        // 00:00 unplayable file.
         Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 5 * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: 10 * 1_000_000_000)
             guard let self else { return }
             if self.ffmpeg.isRunning { kill(self.ffmpeg.processIdentifier, SIGKILL) }
             if self.streamlink.isRunning { kill(self.streamlink.processIdentifier, SIGKILL) }

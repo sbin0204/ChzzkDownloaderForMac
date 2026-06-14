@@ -305,7 +305,11 @@ final class AppModel {
         return alert.runModal() == .alertFirstButtonReturn
     }
 
-    func prepareForTermination() {
+    /// Graceful shutdown for app quit. Awaits each recording's container trailer
+    /// being written and its `.part` renamed before returning, so a long MKV/MP4 is
+    /// never left half-written (which would show 00:00 and refuse to open). The
+    /// caller replies to `applicationShouldTerminate` only after this completes.
+    func prepareForTermination() async {
         livePoll?.cancel()
         schedulerTask?.cancel()
         toastTask?.cancel()
@@ -313,13 +317,14 @@ final class AppModel {
         for item in vodItems where Self.isWorkingVOD(item) {
             vodDownloader.cancel(item: item)
         }
-        engine.terminateAll()
-        // Keep config.armed_channels intact so monitoring resumes next launch;
-        // clearing the in-memory set here must not wipe the persisted list.
+        // Keep config.armed_channels intact so monitoring resumes next launch:
+        // the per-channel onRecordingEnded callbacks fire as recordings finalize
+        // below, and their recordingChannels.remove must not wipe the persisted
+        // list while we are shutting down.
         suppressArmedPersist = true
+        await engine.finishAllGracefully()
         recordingChannels.removeAll()
         oneShotRecordingChannels.removeAll()
-        suppressArmedPersist = false
         progress.removeAll()
         refreshActivityAssertion()
         flushConfigSave()

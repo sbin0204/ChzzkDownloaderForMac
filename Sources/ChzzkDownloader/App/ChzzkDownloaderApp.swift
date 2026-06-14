@@ -31,8 +31,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let model else { return .terminateNow }
         guard model.confirmQuitIfNeeded() else { return .terminateCancel }
-        model.prepareForTermination()
-        return .terminateNow
+        // Finish writing in-progress recordings (container trailer + rename) before
+        // the process exits, then let macOS complete the quit. Without this the app
+        // would exit mid-write and leave an unplayable 00:00 file.
+        Task { @MainActor in
+            await model.prepareForTermination()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 }
 

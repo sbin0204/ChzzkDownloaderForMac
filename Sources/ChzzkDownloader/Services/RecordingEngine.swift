@@ -132,6 +132,48 @@ final class RecordingEngine {
         }
     }
 
+    /// Graceful shutdown for app quit: stop streamlink so ffmpeg receives EOF and
+    /// writes its container trailer (critical for MKV/MP4, which are unplayable —
+    /// 00:00 duration — without it), then wait for each per-channel task to unwind,
+    /// which is where the finished `.part` is renamed to its final file. Bounded by
+    /// `timeout`; anything still alive after that is hard-terminated so quit can
+    /// never hang. Returns once all recordings are finalized (or the cap fires).
+    func finishAllGracefully(timeout: TimeInterval = 30) async {
+        let (tasks, sessions) = state.withValue { ($0.recordingTasks, $0.sessions) }
+        guard !tasks.isEmpty || !sessions.isEmpty else { return }
+
+        // Ask each session to stop gracefully, giving ffmpeg the full window to
+        // flush its trailer before any SIGKILL escalation.
+        for session in sessions.values {
+            session.requestFinish(fallbackAfter: UInt64(max(1, timeout)))
+        }
+        // Stop the loops so they do not start a new segment; the rename of
+        // `.part` -> final still runs as each cancelled task unwinds.
+        for rt in tasks.values { rt.task?.cancel() }
+
+        // Wait for all tasks to complete, but never longer than the cap.
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                for rt in tasks.values { _ = await rt.task?.value }
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64((timeout + 5) * 1_000_000_000))
+            }
+            _ = await group.next()   // whichever finishes first
+            group.cancelAll()
+        }
+
+        // Hard-stop and clear anything that refused to finalize in time.
+        let leftovers = state.withValue { state -> [RecordingSession] in
+            let remaining = Array(state.sessions.values)
+            state.recordingTasks.removeAll()
+            state.sessions.removeAll()
+            state.wakeCounters.removeAll()
+            return remaining
+        }
+        for session in leftovers { session.terminate() }
+    }
+
     private func finishRecordingTask(channelID: String, taskID: UUID, oneShot: Bool) {
         let removed = state.withValue { state in
             guard state.recordingTasks[channelID]?.id == taskID else { return false }
@@ -459,10 +501,15 @@ final class RecordingEngine {
     /// Renames orphaned `[timestamp] ….part` recordings (left behind by a crash or
     /// force quit) to their playable final names. Safe to call at launch, before any
     /// recording starts. Returns the recovered file names.
+    ///
+    /// A `.part` whose contents changed within the last few seconds is skipped: a
+    /// force-quit can leave an orphaned ffmpeg still writing it, and renaming a file
+    /// out from under a live writer would corrupt the recovery.
     static func salvageOrphanParts(outputDirs: [String]) -> [String] {
         let fm = FileManager.default
         var salvaged: [String] = []
         var visited = Set<String>()
+        let staleThreshold: TimeInterval = 10
         for dirValue in outputDirs {
             let dir = resolveOutputDir(dirValue)
             guard visited.insert(dir.path).inserted,
@@ -471,6 +518,11 @@ final class RecordingEngine {
             for url in entries {
                 let name = url.lastPathComponent
                 guard name.hasPrefix("["), name.hasSuffix(".part") else { continue }
+                // Skip files an orphaned recorder may still be appending to.
+                if let modified = (try? fm.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date,
+                   Date().timeIntervalSince(modified) < staleThreshold {
+                    continue
+                }
                 let dest = uniquePath(dir.appendingPathComponent(String(name.dropLast(".part".count))))
                 if (try? fm.moveItem(at: url, to: dest)) != nil {
                     salvaged.append(dest.lastPathComponent)

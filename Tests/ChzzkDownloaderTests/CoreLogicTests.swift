@@ -188,15 +188,23 @@ final class CoreLogicTests: XCTestCase {
         let orphan = dir.appendingPathComponent("[2026-06-10 12_00_00] ch title.ts.part")
         let collision = dir.appendingPathComponent("[2026-06-10 12_00_00] ch title.ts")
         let unrelated = dir.appendingPathComponent("note.part")   // no "[" prefix -> untouched
+        let active = dir.appendingPathComponent("[2026-06-10 13_00_00] ch live.ts.part")
         try Data("a".utf8).write(to: orphan)
         try Data("b".utf8).write(to: collision)
         try Data("c".utf8).write(to: unrelated)
+        try Data("d".utf8).write(to: active)
+        // The orphan is from a previous session; back-date it past the "still being
+        // written" guard. The active file keeps its fresh mtime.
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: -120)], ofItemAtPath: orphan.path)
 
         let salvaged = RecordingEngine.salvageOrphanParts(outputDirs: [dir.path])
 
         XCTAssertEqual(salvaged.count, 1)
         XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: unrelated.path))
+        // A .part still being written (recent mtime) is left untouched.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: active.path))
         // Existing final file is preserved; the orphan gets a unique "_1" name.
         XCTAssertEqual(try String(contentsOf: collision, encoding: .utf8), "b")
         XCTAssertTrue(salvaged[0].contains("_1"))
