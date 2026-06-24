@@ -26,9 +26,13 @@ extension AppModel {
                     }
                     for await (id, info, authFailed) in group {
                         let live = info?.status == "OPEN"
-                        self.liveStatus[id] = (
-                            live, info?.liveTitle ?? "", info?.category ?? "",
-                            info?.tags ?? [], info?.hasMedia ?? false)
+                        self.liveStatus[id] = LiveSnapshot(
+                            isLive: live, title: info?.liveTitle ?? "",
+                            category: info?.category ?? "", tags: info?.tags ?? [],
+                            hasMedia: info?.hasMedia ?? false,
+                            thumbnailURL: live ? (info?.thumbnailURL ?? "") : "",
+                            viewerCount: info?.viewerCount ?? 0,
+                            openDate: info?.openDate ?? "")
                         if authFailed {
                             self.markCookieAuthFailure(context: "라이브 상태 확인")
                         }
@@ -73,6 +77,53 @@ extension AppModel {
         recordingChannels.remove(channel.id)
         oneShotRecordingChannels.remove(channel.id)
         appendLog("\(channel.name) 녹화를 중지했습니다.")
+    }
+
+    /// True while a channel is set to record only its current/next broadcast once.
+    func isOneShot(_ id: String) -> Bool { oneShotRecordingChannels.contains(id) }
+
+    /// "Quick record": record just this broadcast without permanently registering
+    /// the channel. If the channel address is already registered, records it once
+    /// (the permanent channel is untouched); otherwise a hidden ephemeral channel
+    /// is created and removed automatically when the broadcast ends. Returns false
+    /// for an unrecognizable address.
+    @discardableResult
+    func startQuickRecord(urlString: String) -> Bool {
+        let cid = Validate.extractChannelID(urlString)
+        guard Validate.matches(Validate.safeChannelID, cid) else { return false }
+        // Verify tools up front so a missing-tool failure does not leave an
+        // orphaned ephemeral channel that never records.
+        guard ensureTools(needStreamlink: true) else { return true }
+        if let existing = config.channels.first(where: { $0.id == cid }) {
+            startRecording(existing, oneShot: true)
+            return true
+        }
+        let channel = Channel(id: cid, name: cid, output_dir: ".", ephemeral: true)
+        config.channels.append(channel)
+        startRecording(channel, oneShot: true)
+        appendLog("빠른 녹화: \(cid) (이번 방송만 녹화하고 채널은 저장하지 않습니다)")
+        // The ID is a poor label; fetch the streamer's nickname and apply it so the
+        // dashboard and recording filename use the real name. AppModel is @MainActor,
+        // so this resumes on the main actor after the network call.
+        Task { [weak self] in
+            let profile = await ChzzkAPI.fetchChannelProfile(channelID: cid)
+            guard let self, let name = profile?.channelName, !name.isEmpty else { return }
+            if let i = self.config.channels.firstIndex(where: { $0.id == cid && $0.ephemeral }) {
+                self.config.channels[i].name = name
+                self.appendLog("빠른 녹화 채널 이름 확인: \(name)")
+            }
+        }
+        return true
+    }
+
+    /// Removes ephemeral "quick record" channels left behind by a previous session
+    /// (a crash/force-quit before their broadcast ended). Safe at launch: nothing
+    /// is recording yet, and ephemeral channels are never restored as monitored.
+    func purgeLeftoverEphemeralChannels() {
+        let leftovers = config.channels.filter(\.ephemeral)
+        guard !leftovers.isEmpty else { return }
+        config.channels.removeAll(where: \.ephemeral)
+        appendLog("이전 빠른 녹화 임시 채널 \(leftovers.count)개를 정리했습니다.")
     }
 
     /// True while a channel is actively writing a recording file (not just armed).
@@ -221,7 +272,33 @@ extension AppModel {
         }
     }
 
+    // MARK: settings reset
+
+    /// Restores the recording-settings screen's tunables to their defaults
+    /// (format, detection interval, connections, splitting, cyclic cleanup,
+    /// re-encoding). User data — channels, cookies, schedules, monitored
+    /// channels, tool paths, proxy — is intentionally preserved.
+    func resetRecordingSettingsToDefaults() {
+        let defaults = Config()
+        config.output_format = defaults.output_format
+        config.timeout = defaults.timeout
+        config.stream_segment_threads = defaults.stream_segment_threads
+        config.live_split_size_mb = defaults.live_split_size_mb
+        config.live_split_duration_minutes = defaults.live_split_duration_minutes
+        config.cyclic_recording_enabled = defaults.cyclic_recording_enabled
+        config.cyclic_max_files = defaults.cyclic_max_files
+        config.cyclic_max_size_gb = defaults.cyclic_max_size_gb
+        config.hevc_settings = defaults.hevc_settings
+        config.av1_settings = defaults.av1_settings
+        showToast("녹화 설정을 기본값으로 되돌렸습니다")
+    }
+
     // MARK: channel management
+
+    /// Permanently registered channels (excludes ephemeral "quick record" ones).
+    /// Use this for any user-facing channel list — channel management, the
+    /// schedules picker, etc.
+    var registeredChannels: [Channel] { config.channels.filter { !$0.ephemeral } }
 
     enum ChannelEditResult { case ok, invalidID, duplicateID }
 

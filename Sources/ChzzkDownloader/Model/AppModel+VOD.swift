@@ -41,6 +41,35 @@ extension AppModel {
         return true
     }
 
+    func addImportedVODSource(urlString: String) -> Bool {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard VODSourceImporter.isSupportedSourceURL(trimmed) else { return false }
+        let item = VODItem(url: trimmed)
+        item.importedSource = true
+        item.title = URL(string: trimmed)?.deletingPathExtension().lastPathComponent ?? "가져온 소스"
+        item.channelName = "가져온 소스"
+        vodItems.insert(item, at: 0)
+        appendLog("VOD 소스 URL 가져오기: \(item.title)")
+
+        Task {
+            do {
+                let imported = try await VODSourceImporter.importURLString(trimmed)
+                item.title = imported.title
+                item.channelName = imported.channelName
+                item.durationSeconds = imported.duration
+                item.variants = imported.variants
+                item.selectedQuality = imported.variants.last?.quality
+                item.audioOnly = false
+                item.state = .ready
+                appendLog("VOD 소스 URL 가져오기 완료: \(imported.variants.count)개 화질")
+            } catch {
+                item.state = .failed(error.localizedDescription)
+                appendLog("VOD 소스 URL 가져오기 실패: \(error.localizedDescription)")
+            }
+        }
+        return true
+    }
+
     func startVOD(_ item: VODItem) {
         switch item.state {
         case .fetching, .downloading:
@@ -64,6 +93,18 @@ extension AppModel {
 
         Task {
             do {
+                if item.importedSource {
+                    guard let variant = item.variants.first(where: { $0.quality == preferredQuality }) ?? item.variants.last else {
+                        item.state = .failed("가져온 소스에서 다운로드 가능한 항목을 찾지 못했습니다.")
+                        return
+                    }
+                    item.selectedQuality = variant.quality
+                    item.audioOnly = audioOnly
+                    item.clipStart = clipStart
+                    item.clipEnd = clipEnd
+                    startResolvedVOD(item, variant: variant)
+                    return
+                }
                 // Re-resolve at the moment the download starts so old in-memory
                 // HLS variants do not keep routing normal VODs through ffmpeg.
                 let (meta, variants) = try await ChzzkVODAPI.resolve(urlString: item.url, cookies: cookies)
@@ -116,6 +157,7 @@ extension AppModel {
     }
 
     private func downloadModeLabel(item: VODItem, variant: VODVariant) -> String {
+        if variant.requiresRemoteHLS { return item.hasClip ? "권한 HLS 구간 ffmpeg" : "권한 HLS ffmpeg" }
         if variant.isHLS { return item.hasClip ? "HLS 구간 세그먼트+로컬처리" : "HLS 병렬+로컬처리" }
         if variant.hasSegmentParts { return item.hasClip ? "DASH 구간 파트+로컬처리" : "DASH 파트+로컬처리" }
         if item.hasClip { return "구간 병렬 range+로컬처리" }
@@ -204,8 +246,19 @@ extension AppModel {
         let cookies = config.cookies
         Task {
             do {
-                // Re-resolve to get a fresh media URL because CDN tokens expire.
-                let (_, variants) = try await ChzzkVODAPI.resolve(urlString: record.vodURL, cookies: cookies)
+                let variants: [VODVariant]
+                if VODSourceImporter.isSupportedSourceURL(record.vodURL) {
+                    let imported = try await VODSourceImporter.importURLString(record.vodURL)
+                    item.importedSource = true
+                    item.title = imported.title
+                    item.channelName = imported.channelName
+                    item.durationSeconds = imported.duration
+                    variants = imported.variants
+                } else {
+                    // Re-resolve to get a fresh media URL because CDN tokens expire.
+                    let resolved = try await ChzzkVODAPI.resolve(urlString: record.vodURL, cookies: cookies)
+                    variants = resolved.1
+                }
                 guard let variant = variants.first(where: { $0.quality == record.quality }) ?? variants.last else {
                     item.state = .failed("해당 화질을 찾을 수 없습니다."); return
                 }

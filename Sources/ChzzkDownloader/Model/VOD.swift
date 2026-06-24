@@ -37,10 +37,11 @@ struct VODVariant: Hashable, Identifiable {
     var quality: Int
     var url: String
     var isHLS: Bool = false   // live-rewind streams need ffmpeg, not ranged download
+    var requiresRemoteHLS: Bool = false
     var audioBitrateKbps: Int? = nil
     var segmentPlan: VODSegmentPlan? = nil
-    var id: Int { quality }
-    var label: String { "\(quality)p" }
+    var id: String { "\(quality)-\(url)" }
+    var label: String { quality > 0 ? "\(quality)p" : "소스" }
     var hasSegmentParts: Bool { segmentPlan?.hasMediaSegments == true }
 }
 
@@ -66,6 +67,7 @@ enum VODState: Equatable {
 final class VODItem: Identifiable {
     let id = UUID()
     let url: String
+    var importedSource: Bool = false
     var recordID: UUID?        // links to a persisted DownloadRecord
     var title: String = ""
     var channelName: String = ""

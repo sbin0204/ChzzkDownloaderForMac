@@ -118,11 +118,17 @@ class ChzzkHLSStream(HLSStream):
 
     def _update_domain(self, url: str) -> str:
         """
-        Update the domain of the given URL if it matches specific criteria.
+        Route stream URLs to a CDN host that still resolves.
+
+        Naver retired `nlive-streaming.navercdn.com` (it now returns NXDOMAIN), so
+        a URL pointing there fails with "Failed to resolve". The token is path-based
+        (hdnts acl=*/.../*), not host-bound, so mapping it back to the still-live
+        `livecloud.pstatic.net` host serves the same content. Revisit if Naver
+        changes CDN hosts again.
         """
         parsed = urlparse(url)
-        if parsed.hostname == "livecloud.pstatic.net":
-            return urlunparse(parsed._replace(netloc="nlive-streaming.navercdn.com"))
+        if parsed.hostname == "nlive-streaming.navercdn.com":
+            return urlunparse(parsed._replace(netloc="livecloud.pstatic.net"))
         return url
 
     def _get_expire_time(self, url: str) -> Optional[int]:
@@ -340,11 +346,17 @@ class Chzzk(Plugin):
 
     def _update_domain(self, url: str) -> str:
         """
-        Update the domain of the given URL if it matches specific criteria.
+        Route stream URLs to a CDN host that still resolves.
+
+        Naver retired `nlive-streaming.navercdn.com` (it now returns NXDOMAIN), so
+        a URL pointing there fails with "Failed to resolve". The token is path-based
+        (hdnts acl=*/.../*), not host-bound, so mapping it back to the still-live
+        `livecloud.pstatic.net` host serves the same content. Revisit if Naver
+        changes CDN hosts again.
         """
         parsed = urlparse(url)
-        if parsed.hostname == "livecloud.pstatic.net":
-            return urlunparse(parsed._replace(netloc="nlive-streaming.navercdn.com"))
+        if parsed.hostname == "nlive-streaming.navercdn.com":
+            return urlunparse(parsed._replace(netloc="livecloud.pstatic.net"))
         return url
 
     def _get_streams(self) -> Optional[Dict[str, HLSStream]]:

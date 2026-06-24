@@ -12,6 +12,18 @@ struct ChannelProgress: Identifiable, Hashable {
     var startTime: String = "N/A"
 }
 
+/// Per-channel live state shown on the dashboard, refreshed by the live poll.
+struct LiveSnapshot {
+    var isLive: Bool
+    var title: String
+    var category: String
+    var tags: [String]
+    var hasMedia: Bool
+    var thumbnailURL: String = ""
+    var viewerCount: Int = 0
+    var openDate: String = ""
+}
+
 /// Describes a missing-tool install prompt shown to the user.
 struct ToolAlert: Identifiable {
     let id = UUID()
@@ -55,7 +67,15 @@ final class AppModel {
     var fullDiskAccessNeeded = false    // set when Safari cookie import needs Full Disk Access
     var toast: String?                  // transient optimistic-UI confirmation
     var supportSheet: SupportSheet?
+    /// First-launch onboarding sheet; shown once, then remembered in UserDefaults.
+    var showWelcome = false
+    private static let didShowWelcomeKey = "didShowWelcome"
     private var toastTask: Task<Void, Never>?
+
+    func dismissWelcome() {
+        showWelcome = false
+        UserDefaults.standard.set(true, forKey: Self.didShowWelcomeKey)
+    }
 
     func showToast(_ message: String) {
         toast = message
@@ -108,7 +128,7 @@ final class AppModel {
     var lastCookieAuthWarningAt: Date?
 
     /// Live status of registered channels, for the dashboard's on-demand panel.
-    var liveStatus: [String: (isLive: Bool, title: String, category: String, tags: [String], hasMedia: Bool)] = [:]
+    var liveStatus: [String: LiveSnapshot] = [:]
     var recordingChannels: Set<String> = [] {
         didSet {
             refreshActivityAssertion()
@@ -223,16 +243,23 @@ final class AppModel {
                 guard let self else { return }
                 self.recordingChannels.remove(channelID)
                 self.oneShotRecordingChannels.remove(channelID)
+                let channel = self.config.channels.first(where: { $0.id == channelID })
                 if oneShot {
-                    let name = self.config.channels.first(where: { $0.id == channelID })?.name ?? channelID
-                    self.appendLog("예약 녹화 완료: \(name)")
+                    self.appendLog("1회 녹화 완료: \(channel?.name ?? channelID)")
+                }
+                // A quick-record (ephemeral) channel is not a permanent registration:
+                // drop it once its single broadcast ends so the list stays clean.
+                if channel?.ephemeral == true {
+                    self.deleteChannel(id: channelID)
                 }
             }
         }
         configureEngineTooling()
+        showWelcome = !UserDefaults.standard.bool(forKey: Self.didShowWelcomeKey)
         Notifier.requestAuthorizationIfNeeded()
         checkCookieRefreshReminder()
         importCookiesOnLaunchIfNeeded()
+        purgeLeftoverEphemeralChannels()
         salvageOrphanRecordings()
         restoreArmedChannels()
         startLivePolling()

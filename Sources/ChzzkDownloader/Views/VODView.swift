@@ -1,6 +1,5 @@
 import QuickLook
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct VODView: View {
     @Environment(AppModel.self) private var model
@@ -9,21 +8,22 @@ struct VODView: View {
     @State private var dropTargeted = false
 
     var body: some View {
-        VStack(spacing: 12) {
-            HStack {
-                TextField("치지직 영상/클립 URL (chzzk.naver.com/video/… 또는 /clips/…)", text: $urlInput)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                TextField("치지직 영상/클립 URL 또는 vod_chunklist.m3u8 / vod_playlist.m3u8 URL", text: $urlInput)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit(add)
                     .onChange(of: urlInput) { _, newValue in
-                        guard newValue.count > ChzzkVODAPI.maxPageURLLength else { return }
-                        urlInput = String(newValue.prefix(ChzzkVODAPI.maxPageURLLength))
-                        model.showToast("URL은 \(ChzzkVODAPI.maxPageURLLength)자까지만 입력할 수 있습니다")
+                        guard newValue.count > VODSourceImporter.maxSourceURLLength else { return }
+                        urlInput = String(newValue.prefix(VODSourceImporter.maxSourceURLLength))
+                        model.showToast("URL은 \(VODSourceImporter.maxSourceURLLength)자까지만 입력할 수 있습니다")
                     }
                 Button("추가", action: add)
                     .buttonStyle(.borderedProminent)
                     .disabled(!canAddURL(urlInput))
             }
-            .padding([.horizontal, .top], 20)
+            .padding(12)
+            .cardSurface()
 
             content
                 .overlay {
@@ -37,6 +37,7 @@ struct VODView: View {
                     }
                 }
         }
+        .pageContentPadding()
         .navigationTitle("VOD 다운로드")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -55,11 +56,18 @@ struct VODView: View {
                 description: Text("URL을 붙여넣어 추가하거나, 영상 링크를 이 영역으로 끌어다 놓으세요."))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
+            HStack {
+                SummaryTile(title: "항목", value: "\(model.vodItems.count)", systemImage: "bolt.circle")
+                SummaryTile(
+                    title: "진행 중",
+                    value: "\(model.vodItems.filter { if case .downloading = $0.state { return true }; return false }.count)",
+                    systemImage: "arrow.down.circle",
+                    tint: model.vodItems.contains { if case .downloading = $0.state { return true }; return false } ? .brand : .secondary)
+            }
             ScrollView {
                 LazyVStack(spacing: 10) {
                     ForEach(model.vodItems) { VODCard(item: $0) }
                 }
-                .padding(20)
             }
         }
     }
@@ -90,15 +98,18 @@ struct VODView: View {
     private func add() {
         let url = urlInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !url.isEmpty else { return }
-        guard url.count <= ChzzkVODAPI.maxPageURLLength else {
-            model.showToast("URL은 \(ChzzkVODAPI.maxPageURLLength)자까지만 입력할 수 있습니다")
+        guard url.count <= VODSourceImporter.maxSourceURLLength else {
+            model.showToast("URL은 \(VODSourceImporter.maxSourceURLLength)자까지만 입력할 수 있습니다")
             return
         }
-        if model.addVOD(urlString: url) {
+        if ChzzkVODAPI.parseURL(url) != nil, model.addVOD(urlString: url) {
+            model.showToast("추가됨")
+            urlInput = ""
+        } else if model.addImportedVODSource(urlString: url) {
             model.showToast("추가됨")
             urlInput = ""
         } else {
-            model.showToast("치지직 영상 URL이 아닙니다")
+            model.showToast("치지직 영상 URL 또는 vod_chunklist.m3u8 / vod_playlist.m3u8 URL이 아닙니다")
         }
     }
 
@@ -106,7 +117,12 @@ struct VODView: View {
         for provider in providers {
             if provider.canLoadObject(ofClass: URL.self) {
                 _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                    if let url { Task { @MainActor in addDropped(url.absoluteString) } }
+                    if let url {
+                        Task { @MainActor in
+                            guard !url.isFileURL else { return }
+                            addDropped(url.absoluteString)
+                        }
+                    }
                 }
                 return true
             }
@@ -122,18 +138,20 @@ struct VODView: View {
 
     private func addDropped(_ string: String) {
         let url = string.trimmingCharacters(in: .whitespacesAndNewlines)
-        if url.count > ChzzkVODAPI.maxPageURLLength {
-            model.showToast("URL은 \(ChzzkVODAPI.maxPageURLLength)자까지만 입력할 수 있습니다")
-        } else if model.addVOD(urlString: url) {
+        if url.count > VODSourceImporter.maxSourceURLLength {
+            model.showToast("URL은 \(VODSourceImporter.maxSourceURLLength)자까지만 입력할 수 있습니다")
+        } else if ChzzkVODAPI.parseURL(url) != nil, model.addVOD(urlString: url) {
+            model.showToast("추가됨")
+        } else if model.addImportedVODSource(urlString: url) {
             model.showToast("추가됨")
         } else {
-            model.showToast("치지직 영상 URL이 아닙니다")
+            model.showToast("치지직 영상 URL 또는 vod_chunklist.m3u8 / vod_playlist.m3u8 URL이 아닙니다")
         }
     }
 
     private func canAddURL(_ value: String) -> Bool {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !trimmed.isEmpty && trimmed.count <= ChzzkVODAPI.maxPageURLLength
+        return !trimmed.isEmpty && trimmed.count <= VODSourceImporter.maxSourceURLLength
     }
 
     private func pickFolder() {
@@ -142,6 +160,7 @@ struct VODView: View {
         panel.canChooseFiles = false
         if panel.runModal() == .OK, let url = panel.url { model.vodOutputDir = url.path }
     }
+
 }
 
 struct VODCard: View {
@@ -163,6 +182,10 @@ struct VODCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top) {
+                Image(systemName: itemIcon)
+                    .foregroundStyle(itemTint)
+                    .frame(width: 30, height: 30)
+                    .background(itemTint.opacity(0.10), in: RoundedRectangle(cornerRadius: 7))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.title.isEmpty ? item.url : item.title)
                         .fontWeight(.medium).lineLimit(2)
@@ -173,7 +196,8 @@ struct VODCard: View {
                 }
                 Spacer()
                 if canRemoveFromList {
-                    itemMenu
+                    removeButton
+                        .controlSize(.small)
                 }
             }
 
@@ -189,6 +213,28 @@ struct VODCard: View {
         }
     }
 
+    private var itemIcon: String {
+        switch item.state {
+        case .fetching: return "arrow.triangle.2.circlepath"
+        case .ready: return "bolt.circle"
+        case .downloading: return "arrow.down.circle"
+        case .completed: return "checkmark.circle.fill"
+        case .failed: return "exclamationmark.triangle.fill"
+        case .canceled: return "pause.circle"
+        }
+    }
+
+    private var itemTint: Color {
+        switch item.state {
+        case .fetching: return .secondary
+        case .ready: return .brand
+        case .downloading: return .brand
+        case .completed: return .green
+        case .failed: return .orange
+        case .canceled: return .secondary
+        }
+    }
+
     private func openClipPicker() {
         model.clipTargets[item.id] = item
         openWindow(id: "clipPicker", value: item.id)
@@ -196,18 +242,6 @@ struct VODCard: View {
 
     private var canRemoveFromList: Bool {
         item.state.canRemoveFromVODList
-    }
-
-    private var itemMenu: some View {
-        Menu {
-            removeButton
-        } label: {
-            Label("추가 작업", systemImage: "ellipsis.circle")
-                .labelStyle(.iconOnly)
-        }
-        .menuStyle(.borderlessButton)
-        .controlSize(.small)
-        .help("추가 작업")
     }
 
     private var removeButton: some View {
@@ -272,13 +306,23 @@ struct VODCard: View {
                 Spacer()
                 if let path = item.outputPath {
                     let url = URL(fileURLWithPath: path)
-                    Button { previewURL = url } label: { Image(systemName: "eye") }
-                        .controlSize(.small).buttonStyle(.borderless).help("미리보기 (Quick Look)")
-                    ShareLink(item: url) { Image(systemName: "square.and.arrow.up") }
-                        .controlSize(.small).help("공유")
-                    Button("Finder에서 보기") {
+                    Button { previewURL = url } label: {
+                        Label("미리보기", systemImage: "eye")
+                    }
+                    .controlSize(.small)
+                    .help("미리보기 (Quick Look)")
+                    ShareLink(item: url) {
+                        Label("공유", systemImage: "square.and.arrow.up")
+                    }
+                    .controlSize(.small)
+                    .help("공유")
+                    Button {
                         NSWorkspace.shared.activateFileViewerSelecting([url])
-                    }.controlSize(.small)
+                    } label: {
+                        Label("Finder", systemImage: "folder")
+                    }
+                    .controlSize(.small)
+                    .help("Finder에서 보기")
                 }
             }
 

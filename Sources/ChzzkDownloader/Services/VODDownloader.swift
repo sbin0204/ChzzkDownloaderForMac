@@ -28,6 +28,7 @@ final class VODDownloader {
 
     static func strategy(variant: VODVariant, audioOnly: Bool,
                          clipStart: Double?, clipEnd: Double?) -> DownloadStrategy {
+        if variant.requiresRemoteHLS { return .remoteFFmpegSeek }
         if variant.isHLS { return .hlsSegmentPrefetch }
         let hasClip = clipStart != nil && clipEnd != nil && (clipEnd ?? 0) > (clipStart ?? 0)
         // Do not move segmented DASH clips back to "download from 0 then cut".
@@ -71,6 +72,36 @@ final class VODDownloader {
         return args
     }
 
+    static func remoteHLSArguments(variantURL: String, cookies: Cookies, outURL: URL, partURL: URL,
+                                   audioOnly: Bool, clipStart: Double?, clipDuration: Double?) -> [String] {
+        let seekPre = clipStart.map { ["-ss", String(format: "%.3f", $0)] } ?? []
+        let durArgs = clipDuration.map { ["-t", String(format: "%.3f", $0)] } ?? []
+        let muxer = outURL.pathExtension.lowercased() == "m4a" ? "ipod" : "mp4"
+        let reconnectArgs = [
+            "-reconnect", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_on_http_error", "4xx,5xx",
+            "-reconnect_delay_max", "5",
+            "-rw_timeout", "15000000",
+        ]
+
+        var args: [String] = ["-y", "-user_agent", VODRequestHeaders.userAgent]
+        args += ProxySupport.ffmpegArgs()
+        args += reconnectArgs
+        args += seekPre
+        args += [
+            "-headers", VODRequestHeaders.ffmpegHeaders(cookies: cookies),
+            "-allowed_extensions", "ALL",
+            "-extension_picky", "0",
+            "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
+            "-i", variantURL,
+        ]
+        args += durArgs
+        args += copyStreamArgs(audioOnly: audioOnly)
+        args += ["-progress", "pipe:2", "-f", muxer, partURL.path]
+        return args
+    }
+
     static func copyStreamArgs(audioOnly: Bool) -> [String] {
         if audioOnly {
             return ["-map", "0:a:0?", "-vn", "-sn", "-dn", "-c:a", "copy"]
@@ -108,6 +139,9 @@ final class VODDownloader {
         if isFFmpegNoSpaceFailure(status: status, logTail: logTail) {
             return "\(prefix) 종료 코드 \(status): 저장 공간이 부족합니다(ENOSPC). 저장 위치와 임시 작업 파일 위치의 여유 공간을 확보한 뒤 다시 시도하세요."
         }
+        if looksLikeAuthorizedHLSFailure(logTail) {
+            return "\(prefix) 종료 코드 \(status): 암호화 VOD 키 요청이 거부되었습니다. 멤버십/시청 권한이 있는 계정 쿠키를 다시 불러온 뒤 시도하세요."
+        }
 
         let generic = ["Conversion failed!", "Conversion failed"]
         let keywords = ["Error", "Invalid", "Unable", "No such", "Failed", "not found",
@@ -123,6 +157,19 @@ final class VODDownloader {
         } ?? candidates.last
         let detail = reason.map { ": \($0)" } ?? ""
         return "\(prefix) 종료 코드 \(status)\(detail)"
+    }
+
+    private static func looksLikeAuthorizedHLSFailure(_ logTail: [String]) -> Bool {
+        let joined = logTail.joined(separator: "\n")
+        let authFailure = joined.localizedCaseInsensitiveContains("403 Forbidden")
+            || joined.localizedCaseInsensitiveContains("401 Unauthorized")
+            || joined.localizedCaseInsensitiveContains("HTTP error 403")
+            || joined.localizedCaseInsensitiveContains("HTTP error 401")
+        guard authFailure else { return false }
+        return joined.localizedCaseInsensitiveContains("aes_key")
+            || joined.localizedCaseInsensitiveContains("EXT-X-KEY")
+            || joined.localizedCaseInsensitiveContains("Unable to open key")
+            || joined.localizedCaseInsensitiveContains("Error when loading first segment")
     }
 
     private static func isFFmpegNoSpaceFailure(status: Int32, logTail: [String]) -> Bool {
@@ -158,6 +205,14 @@ final class VODDownloader {
         }
         let decimals = abs(value) >= 10 ? 1 : 2
         return String(format: "%.\(decimals)fx", value)
+    }
+
+    static func formattedByteRate(currentSize: Int, previousSize: Int,
+                                  elapsed: TimeInterval, fallback: String) -> String {
+        guard currentSize > previousSize, elapsed >= 0.2 else { return fallback }
+        let bps = Double(currentSize - previousSize) / elapsed
+        guard bps.isFinite, bps > 0 else { return fallback }
+        return ProgressParser.formatSize(bps) + "/s"
     }
 
     static func postprocessSpaceFailureMessage(required: Int, available: Int64) -> String {
@@ -723,9 +778,13 @@ final class VODDownloader {
         // Clip seek: keep -ss before -i so ffmpeg can use HTTP range requests.
         // Do not fall back to accurate seek after -i; that reads from the beginning
         // and defeats the purpose of partial download.
-        let args = Self.remoteFFmpegArguments(
-            variantURL: variant.url, cookies: cookies, outURL: outURL, partURL: partURL,
-            audioOnly: audioOnly, clipStart: clipStart, clipDuration: clipDuration)
+        let args = variant.requiresRemoteHLS
+            ? Self.remoteHLSArguments(
+                variantURL: variant.url, cookies: cookies, outURL: outURL, partURL: partURL,
+                audioOnly: audioOnly, clipStart: clipStart, clipDuration: clipDuration)
+            : Self.remoteFFmpegArguments(
+                variantURL: variant.url, cookies: cookies, outURL: outURL, partURL: partURL,
+                audioOnly: audioOnly, clipStart: clipStart, clipDuration: clipDuration)
         onProgress(0, clipStart != nil ? "ffmpeg 구간 요청 준비중…" : "ffmpeg 요청 준비중…", "", "")
 
         let proc = Process()
@@ -736,6 +795,7 @@ final class VODDownloader {
         proc.standardOutput = FileHandle.nullDevice
 
         let output = FFmpegOutputCapture()
+        let speedSamples = Synchronized((size: 0, time: Date(), speed: ""), label: "ChzzkDownloader.VODDownloader.ffmpegSpeed")
         errPipe.fileHandleForReading.readabilityHandler = { h in
             let chunk = h.availableData
             if chunk.isEmpty { return }
@@ -744,8 +804,24 @@ final class VODDownloader {
                 let secs = ProgressParser.parseTime(outTime)
                 let size = Int(summary["total_size"] ?? "0") ?? 0
                 let pct = duration > 0 ? min(1.0, secs / duration) : 0
+                let now = Date()
+                let byteRate = speedSamples.withValue { sample in
+                    let elapsed = now.timeIntervalSince(sample.time)
+                    if elapsed >= 0.5 {
+                        sample.speed = Self.formattedByteRate(
+                            currentSize: size, previousSize: sample.size,
+                            elapsed: elapsed, fallback: sample.speed)
+                        sample.size = size
+                        sample.time = now
+                    }
+                    return sample.speed
+                }
+                let processingSpeed = Self.formattedFFmpegSpeed(summary["speed"], fallback: "")
+                let speed = byteRate.isEmpty
+                    ? (processingSpeed.isEmpty ? "N/A" : processingSpeed)
+                    : (processingSpeed.isEmpty ? byteRate : "\(byteRate) (\(processingSpeed))")
                 onProgress(pct, ProgressParser.formatSize(Double(size)),
-                           Self.formattedFFmpegSpeed(summary["speed"], fallback: "N/A"), outTime)
+                           speed, outTime)
             }
         }
 

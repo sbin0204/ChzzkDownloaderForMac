@@ -12,34 +12,51 @@ struct ChannelsView: View {
     @State private var search = ""
     @State private var deleteTarget: Channel?
 
+    /// Permanently registered channels only. Ephemeral "quick record" channels are
+    /// hidden — they are not registrations and disappear when their broadcast ends.
+    private var registeredChannels: [Channel] { model.registeredChannels }
+
     private var filtered: [Channel] {
-        guard !search.isEmpty else { return model.config.channels }
-        return model.config.channels.filter {
+        guard !search.isEmpty else { return registeredChannels }
+        return registeredChannels.filter {
             $0.name.localizedCaseInsensitiveContains(search) ||
             $0.id.localizedCaseInsensitiveContains(search)
         }
     }
 
     var body: some View {
-        Group {
-            if model.config.channels.isEmpty {
-                ContentUnavailableView(
-                    "채널 없음", systemImage: "person.2",
-                    description: Text("툴바의 +, 또는 ⌘N으로 치지직 채널을 추가하세요."))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List {
-                    ForEach(filtered) { ch in
-                        ChannelRow(channel: ch, onEdit: { sheet = .edit(ch) })
-                            .contextMenu {
-                                Button("편집") { sheet = .edit(ch) }
-                                Button("삭제", role: .destructive) { deleteTarget = ch }
-                            }
-                    }
+        VStack(alignment: .leading, spacing: 14) {
+            if !registeredChannels.isEmpty {
+                HStack {
+                    SummaryTile(title: "등록 채널", value: "\(registeredChannels.count)", systemImage: "person.2")
+                    SummaryTile(title: "검색 결과", value: "\(filtered.count)", systemImage: "magnifyingglass", tint: .secondary)
                 }
-                .listStyle(.inset(alternatesRowBackgrounds: true))
+            }
+
+            Group {
+                if registeredChannels.isEmpty {
+                    ContentUnavailableView(
+                        "채널 없음", systemImage: "person.2",
+                        description: Text("툴바의 +, 또는 ⌘N으로 치지직 채널을 추가하세요."))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List {
+                        ForEach(filtered) { ch in
+                            ChannelRow(channel: ch, onEdit: { sheet = .edit(ch) })
+                                .contextMenu {
+                                    Button("편집") { sheet = .edit(ch) }
+                                    Button("삭제", role: .destructive) { deleteTarget = ch }
+                                }
+                        }
+                    }
+                    .listStyle(.inset(alternatesRowBackgrounds: true))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5))
+                }
             }
         }
+        .pageContentPadding()
         .navigationTitle("채널")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -80,7 +97,10 @@ struct ChannelRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "person.crop.circle").foregroundStyle(.secondary)
+            Image(systemName: "person.crop.circle")
+                .foregroundStyle(.secondary)
+                .frame(width: 28, height: 28)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
             VStack(alignment: .leading, spacing: 2) {
                 Text(channel.name).fontWeight(.medium)
                 Text("id: \(channel.id)").font(.caption).foregroundStyle(.secondary)
@@ -124,19 +144,45 @@ struct ChannelEditSheet: View {
     @State private var stopOnTagMismatch = false
     @State private var error: String?
     @State private var showDeleteConfirm = false
+    @State private var channelLookupIsLoading = false
+    @State private var channelLookupMessage: String?
+    @State private var channelLookupFailed = false
+    @State private var nameWasEdited = false
+    @State private var autoFilledName: String?
 
     private var isEdit: Bool { if case .edit = mode { return true }; return false }
     private var originalID: String { if case .edit(let c) = mode { return c.id }; return "" }
+    private var normalizedChannelID: String { Validate.extractChannelID(id) }
+    private var canAutoFillName: Bool {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !nameWasEdited
+    }
+    private var nameBinding: Binding<String> {
+        Binding(
+            get: { name },
+            set: { newValue in
+                name = newValue
+                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                nameWasEdited = !trimmed.isEmpty && trimmed != autoFilledName
+            }
+        )
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             Text(isEdit ? "채널 편집" : "채널 추가").font(.title3).bold()
 
             Form {
-                TextField("채널 ID", text: $id,
-                          prompt: Text("예: chzzk.naver.com/abc1234 의 abc1234"))
-                TextField("이름 (선택)", text: $name)
-                Picker("라이브 녹화 화질", selection: $quality) {
+                LabeledContent("채널") {
+                    HStack(spacing: 8) {
+                        TextField("채널", text: $id,
+                                  prompt: Text("채널 ID 또는 주소"))
+                            .textFieldStyle(.roundedBorder)
+                            .help("채널 ID 또는 chzzk.naver.com 주소를 붙여넣으세요")
+                        channelLookupIndicator
+                    }
+                }
+                TextField("이름", text: nameBinding, prompt: Text("자동 입력"))
+                Picker("화질", selection: $quality) {
                     Text("최고").tag("best")
                     Text("1080p").tag("1080p")
                     Text("720p").tag("720p")
@@ -145,19 +191,19 @@ struct ChannelEditSheet: View {
                     Text("최저").tag("worst")
                 }
                 HStack {
-                    TextField("저장 폴더 (선택)", text: $outputDir,
+                    TextField("저장 폴더", text: $outputDir,
                               prompt: Text("비우면 기본 폴더에 저장"))
                     Button("찾아보기…") { browse() }
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    TextField("녹화 태그 (선택)", text: $tags,
+                    TextField("녹화 태그", text: $tags,
                               prompt: Text("쉼표로 구분, 예: 종합게임, 저챗"))
-                    Text("입력하면 방송 태그가 하나라도 일치할 때만 녹화합니다. 비우면 항상 녹화합니다.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                    Toggle("방송 중 태그가 바뀌어 일치하지 않으면 녹화 중단", isOn: $stopOnTagMismatch)
+                        .help("방송 태그가 하나라도 일치할 때만 녹화합니다. 비우면 항상 녹화합니다.")
+                    Toggle("태그 불일치 시 녹화 중단", isOn: $stopOnTagMismatch)
                         .font(.caption)
                         .disabled(Validate.parseTagFilter(tags).isEmpty)
-                        .padding(.top, 4)
+                        .padding(.top, 2)
+                        .help("방송 중 태그가 바뀌어 일치하지 않으면 녹화를 중단합니다.")
                 }
             }
 
@@ -175,7 +221,7 @@ struct ChannelEditSheet: View {
                 Button("취소") { dismiss() }
                 Button(isEdit ? "저장" : "추가") { save() }
                     .buttonStyle(.borderedProminent)
-                    .disabled(id.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(Validate.extractChannelID(id).isEmpty)
             }
         }
         .confirmationDialog("이 채널을 삭제할까요?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
@@ -184,8 +230,8 @@ struct ChannelEditSheet: View {
         } message: {
             Text(channelDeleteMessage)
         }
-        .padding(20)
-        .frame(width: 460)
+        .padding(18)
+        .frame(width: 430)
         .onAppear {
             if case .edit(let c) = mode {
                 id = c.id; name = c.name
@@ -193,17 +239,22 @@ struct ChannelEditSheet: View {
                 outputDir = (c.output_dir == "." ? "" : c.output_dir)
                 tags = c.tag_filter.joined(separator: ", ")
                 stopOnTagMismatch = c.stop_on_tag_mismatch
+                nameWasEdited = !c.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && c.name != c.id
             }
+        }
+        .task(id: normalizedChannelID) {
+            await lookupChannelProfileIfNeeded(for: normalizedChannelID)
         }
     }
 
     private func save() {
+        let channelID = Validate.extractChannelID(id)
         let tagFilter = Validate.parseTagFilter(tags)
         let stopOption = stopOnTagMismatch && !tagFilter.isEmpty
         let result: AppModel.ChannelEditResult = isEdit
-            ? model.updateChannel(originalID: originalID, id: id, name: name, outputDir: outputDir,
+            ? model.updateChannel(originalID: originalID, id: channelID, name: name, outputDir: outputDir,
                                   quality: quality, tagFilter: tagFilter, stopOnTagMismatch: stopOption)
-            : model.addChannel(id: id, name: name, outputDir: outputDir,
+            : model.addChannel(id: channelID, name: name, outputDir: outputDir,
                                quality: quality, tagFilter: tagFilter, stopOnTagMismatch: stopOption)
         switch result {
         case .ok: dismiss()
@@ -221,6 +272,59 @@ struct ChannelEditSheet: View {
     private func browse() {
         DirectoryPicker.chooseRecordingDirectory(initialPath: outputDir) { selectedPath in
             outputDir = selectedPath
+        }
+    }
+
+    @ViewBuilder
+    private var channelLookupIndicator: some View {
+        if channelLookupIsLoading {
+            ProgressView()
+                .controlSize(.small)
+                .frame(width: 18)
+                .help("채널 확인 중")
+        } else if let channelLookupMessage {
+            Image(systemName: channelLookupFailed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                .foregroundStyle(channelLookupFailed ? .orange : .secondary)
+                .frame(width: 18)
+                .help(channelLookupMessage)
+        }
+    }
+
+    @MainActor
+    private func lookupChannelProfileIfNeeded(for channelID: String) async {
+        channelLookupMessage = nil
+        channelLookupFailed = false
+
+        guard Validate.matches(Validate.safeChannelID, channelID) else {
+            channelLookupIsLoading = false
+            return
+        }
+        guard !isEdit || channelID != originalID || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            channelLookupIsLoading = false
+            return
+        }
+
+        channelLookupIsLoading = true
+        try? await Task.sleep(nanoseconds: 450_000_000)
+        guard !Task.isCancelled else { return }
+
+        let profile = await ChzzkAPI.fetchChannelProfile(channelID: channelID)
+        guard !Task.isCancelled else { return }
+
+        channelLookupIsLoading = false
+        guard let profile else {
+            channelLookupFailed = true
+            channelLookupMessage = "채널을 찾지 못했습니다."
+            return
+        }
+
+        if canAutoFillName {
+            name = profile.channelName
+            autoFilledName = profile.channelName
+            nameWasEdited = false
+            channelLookupMessage = profile.channelName
+        } else {
+            channelLookupMessage = profile.channelName
         }
     }
 }

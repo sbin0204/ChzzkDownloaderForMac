@@ -34,6 +34,175 @@ final class CoreLogicTests: XCTestCase {
         XCTAssertTrue(VODState.canceled.canRemoveFromVODList)
     }
 
+    func testVODServerDeletedMessageExplainsOfficialAPILimit() throws {
+        let error = VODError.server(code: 9003, message: "운영자에 의해 삭제된 영상입니다.")
+        let description = try XCTUnwrap(error.errorDescription)
+
+        XCTAssertTrue(description.contains("운영자에 의해 삭제된 영상입니다."))
+        XCTAssertTrue(description.contains("공식 API로 새 재생 주소를 받을 수 없습니다"))
+        XCTAssertTrue(description.contains("9003"))
+    }
+
+    func testVODSourceImporterExtractsManifestURLsFromHARLikeJSON() {
+        let har = """
+        {
+          "log": {
+            "entries": [
+              {
+                "response": {
+                  "content": {
+                    "text": "{\\"media\\":[{\\"path\\":\\"https:\\\\/\\\\/cdn.example\\\\/vod_playlist.m3u8?hdnts=exp=123\\\\u0026hmac=abc\\"}]}"
+                  }
+                }
+              },
+              {
+                "request": {
+                  "url": "https://cdn.example/720p/chunklist.m3u8?token=def\\\\"
+                }
+              }
+            ]
+          }
+        }
+        """
+
+        let candidates = VODSourceImporter.sourceCandidates(from: har)
+
+        XCTAssertTrue(candidates.contains("https://cdn.example/vod_playlist.m3u8?hdnts=exp=123&hmac=abc"))
+        XCTAssertTrue(candidates.contains("https://cdn.example/720p/chunklist.m3u8?token=def"))
+    }
+
+    func testVODSourceImporterAcceptsDirectManifestURL() {
+        let video = "https://ex-nlive-slitvod-streaming.navercdn.com/chzzk/kr/live_rewind/c/live_rewind_kr/abc/1080p/hdntl=exp=123~acl=*/kr/*~data=hdntl~hmac=abc/vod_chunklist.m3u8"
+        let audio = "https://ex-nlive-slitvod-streaming.navercdn.com/chzzk/kr/live_rewind/c/live_rewind_kr/abc/audioOnly/hdntl=exp=123/vod_chunklist.m3u8"
+
+        XCTAssertTrue(VODSourceImporter.isSupportedSourceURL(video))
+        XCTAssertFalse(VODSourceImporter.isSupportedSourceURL(audio))
+        XCTAssertEqual(VODSourceImporter.sourceCandidates(from: video), [video])
+    }
+
+    func testVODSourceImporterFlagsAESEncryptedHLSForRemoteDemux() {
+        // An #EXT-X-KEY with a real method (or an hls-aes URL) must route through
+        // ffmpeg; the parallel segment downloader cannot decrypt it.
+        let encryptedPlaylist = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"key\"\n#EXTINF:2,\nseg0.ts\n"
+        XCTAssertTrue(VODSourceImporter.isAESEncrypted(playlist: encryptedPlaylist, url: "https://x/vod.m3u8"))
+        XCTAssertTrue(VODSourceImporter.isAESEncrypted(playlist: "#EXTM3U\n#EXTINF:2,\nseg0.ts\n",
+                                                       url: "https://x/hls-aes/vod.m3u8"))
+        // A plain playlist (or one only clearing a key) must stay on the fast path.
+        XCTAssertFalse(VODSourceImporter.isAESEncrypted(playlist: "#EXTM3U\n#EXTINF:2,\nseg0.ts\n",
+                                                        url: "https://x/vod.m3u8"))
+        XCTAssertFalse(VODSourceImporter.isAESEncrypted(playlist: "#EXTM3U\n#EXT-X-KEY:METHOD=NONE\n#EXTINF:2,\nseg0.ts\n",
+                                                        url: "https://x/vod.m3u8"))
+    }
+
+    func testVODSourceImporterKeepsVODPlaybackSourcesFromHAR() {
+        let har = """
+        {
+          "log": {
+            "entries": [
+              {
+                "request": {
+                  "url": "https://api.chzzk.naver.com/service/v2/videos/13718617"
+                },
+                "response": {
+                  "content": {
+                    "text": "{\\"content\\":{\\"liveRewindPlaybackJson\\":\\"{\\\\\\"media\\\\\\":[{\\\\\\"path\\\\\\":\\\\\\"https:\\\\\\\\/\\\\\\\\/ex-nlive-slitvod-streaming.navercdn.com\\\\\\\\/chzzk\\\\\\\\/kr\\\\\\\\/live_rewind\\\\\\\\/c\\\\\\\\/live_rewind_kr\\\\\\\\/abc\\\\\\\\/vod_playlist.m3u8?hdnts=exp=123\\\\\\\\u0026hmac=vod\\\\\\"}]}\\\"}}"
+                  }
+                }
+              }
+            ]
+          }
+        }
+        """
+
+        let candidates = VODSourceImporter.sourceCandidates(from: har)
+
+        XCTAssertEqual(candidates, [
+            "https://ex-nlive-slitvod-streaming.navercdn.com/chzzk/kr/live_rewind/c/live_rewind_kr/abc/vod_playlist.m3u8?hdnts=exp=123&hmac=vod"
+        ])
+    }
+
+    func testVODSourceImporterIgnoresLiveDetailAndSegmentOnlyHAR() {
+        let har = """
+        {
+          "log": {
+            "entries": [
+              {
+                "request": {
+                  "url": "https://api.chzzk.naver.com/service/v3.2/channels/channel-id/live-detail"
+                },
+                "response": {
+                  "content": {
+                    "mimeType": "application/json",
+                    "text": "{\\"content\\":{\\"livePlaybackJson\\":\\"{\\\\\\"media\\\\\\":[{\\\\\\"path\\\\\\":\\\\\\"https:\\\\\\\\/\\\\\\\\/livecloud.pstatic.net\\\\\\\\/chzzk\\\\\\\\/lip2_kr\\\\\\\\/abc_hls_playlist.m3u8?hdnts=exp=123\\\\\\"}]}\\\"}}"
+                  }
+                }
+              },
+              {
+                "request": {
+                  "url": "https://light-slit.akamaized.net/chzzk/kr/live_rewind/c/live_rewind_kr/abc/1080p/hdntl=exp=123~hmac=seg/1080p_4134590815_1781330535372_142_0"
+                },
+                "response": {
+                  "content": {
+                    "mimeType": "video/mp4"
+                  }
+                }
+              }
+            ]
+          }
+        }
+        """
+
+        let candidates = VODSourceImporter.sourceCandidates(from: har)
+
+        XCTAssertTrue(candidates.isEmpty)
+    }
+
+    func testVODSourceImporterBuildsSegmentPlanFromHARMediaChunks() async throws {
+        let har = """
+        {
+          "log": {
+            "entries": [
+              {
+                "request": {
+                  "url": "https://light-slit.akamaized.net/chzzk/kr/live_rewind/c/live_rewind_kr/abc/1080p/hdntl=exp=123~hmac=seg/1080p_4134590815_1781330535372_142_0_71.m4v"
+                },
+                "response": {
+                  "content": {
+                    "mimeType": "video/mp4",
+                    "text": "AAAA",
+                    "encoding": "base64"
+                  }
+                }
+              },
+              {
+                "request": {
+                  "url": "https://light-slit.akamaized.net/chzzk/kr/live_rewind/c/live_rewind_kr/abc/1080p/hdntl=exp=123~hmac=seg/1080p_3578850150_1781330537372_144_0_72.m4v"
+                },
+                "response": {
+                  "content": {
+                    "mimeType": "video/mp4",
+                    "text": "AAAA",
+                    "encoding": "base64"
+                  }
+                }
+              }
+            ]
+          }
+        }
+        """
+
+        let imported = try await VODSourceImporter.importText(har, sourceName: "segment-only")
+
+        XCTAssertEqual(imported.channelName, "HAR 캡처 조각")
+        XCTAssertEqual(imported.duration, 4)
+        XCTAssertEqual(imported.variants.first?.quality, 1080)
+        let media = try XCTUnwrap(imported.variants.first?.segmentPlan?.media)
+        XCTAssertEqual(media.count, 2)
+        XCTAssertEqual(media[0].start, 0)
+        XCTAssertEqual(media[0].duration, 2)
+        XCTAssertEqual(media[1].start, 2)
+    }
+
     func testFilenameShorteningKeepsComponentsBelowByteLimits() {
         let longName = String(repeating: "very-long-title-", count: 20) + "segment.mp4"
         let shortened = Filename.shortenedComponent(longName)
@@ -181,6 +350,44 @@ final class CoreLogicTests: XCTestCase {
         XCTAssertFalse(ChzzkAPI.looksLikeAuthFailure("로그인 화면을 건너뜁니다"))
     }
 
+    func testChannelProfileResponseParsing() throws {
+        let data = Data("""
+        {
+          "code": 200,
+          "message": null,
+          "content": {
+            "channelId": "abc123",
+            "channelName": "테스트채널",
+            "channelImageUrl": "https://example.com/profile.png",
+            "followerCount": 42,
+            "openLive": true
+          }
+        }
+        """.utf8)
+
+        let profile = try XCTUnwrap(ChzzkAPI.parseChannelProfileResponse(data))
+
+        XCTAssertEqual(profile.channelID, "abc123")
+        XCTAssertEqual(profile.channelName, "테스트채널")
+        XCTAssertEqual(profile.channelImageURL, "https://example.com/profile.png")
+        XCTAssertEqual(profile.followerCount, 42)
+        XCTAssertTrue(profile.openLive)
+    }
+
+    func testChannelProfileResponseParsingRejectsMissingName() {
+        let data = Data("""
+        {
+          "code": 200,
+          "content": {
+            "channelId": "abc123",
+            "channelName": ""
+          }
+        }
+        """.utf8)
+
+        XCTAssertNil(ChzzkAPI.parseChannelProfileResponse(data))
+    }
+
     func testSalvageOrphanPartsRecoversCrashLeftovers() throws {
         let dir = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -210,6 +417,20 @@ final class CoreLogicTests: XCTestCase {
         XCTAssertTrue(salvaged[0].contains("_1"))
     }
 
+    func testExtractChannelIDFromPastedURLsAndBareID() {
+        let id = "abc123_DEF-456"
+        XCTAssertEqual(Validate.extractChannelID(id), id)
+        XCTAssertEqual(Validate.extractChannelID("  \(id)  "), id)
+        XCTAssertEqual(Validate.extractChannelID("https://chzzk.naver.com/\(id)"), id)
+        XCTAssertEqual(Validate.extractChannelID("chzzk.naver.com/\(id)"), id)
+        XCTAssertEqual(Validate.extractChannelID("https://chzzk.naver.com/live/\(id)"), id)
+        XCTAssertEqual(Validate.extractChannelID("https://chzzk.naver.com/\(id)/live"), id)
+        XCTAssertEqual(Validate.extractChannelID("https://chzzk.naver.com/\(id)?foo=bar"), id)
+        XCTAssertEqual(Validate.extractChannelID("https://chzzk.naver.com/\(id)#x"), id)
+        // The extracted value still has to pass channel-ID validation.
+        XCTAssertTrue(Validate.matches(Validate.safeChannelID, Validate.extractChannelID("chzzk.naver.com/\(id)")))
+    }
+
     func testTagFilterParsingTrimsDedupesAndCaps() {
         let parsed = Validate.parseTagFilter("  종합게임 , 저챗,종합게임 ,  ,저챗 ")
         XCTAssertEqual(parsed, ["종합게임", "저챗"])
@@ -220,6 +441,18 @@ final class CoreLogicTests: XCTestCase {
         let long = String(repeating: "가", count: 100)
         let normalized = Validate.parseTagFilter(long)
         XCTAssertEqual(normalized.first?.count, Validate.maxTagLength)
+    }
+
+    func testChannelEphemeralFlagRoundTripsAndDefaultsFalse() throws {
+        let ephemeral = Channel(id: "quick1", name: "quick1", output_dir: ".", ephemeral: true)
+        let data = try JSONEncoder().encode(ephemeral)
+        let decoded = try JSONDecoder().decode(Channel.self, from: data)
+        XCTAssertTrue(decoded.ephemeral)
+
+        // Older config.json without the field decodes as a permanent channel.
+        let legacy = #"{"id":"c","name":"c","output_dir":".","quality":"best"}"#
+        let legacyChannel = try JSONDecoder().decode(Channel.self, from: Data(legacy.utf8))
+        XCTAssertFalse(legacyChannel.ephemeral)
     }
 
     func testChannelAcceptsTagsMatchesCaseInsensitivelyAndAllowsEmptyFilter() {
@@ -649,6 +882,33 @@ final class CoreLogicTests: XCTestCase {
         XCTAssertEqual(plan.media.map(\.duration), [4, 4, 2])
     }
 
+    func testDASHParserExtractsAuthorizedHLSAttributesOnlyWhenRequested() throws {
+        let xml = """
+        <MPD>
+          <Period>
+            <AdaptationSet mimeType="video/mp2t">
+              <Representation id="v1080" bandwidth="8000000" width="1920" height="1080"
+                  nvod:m3u="https://cdn.example/hls-aes/v1080/media.m3u8">
+                <ContentProtection schemeIdUri="urn:mpeg:dash:sea:2012"/>
+              </Representation>
+            </AdaptationSet>
+          </Period>
+        </MPD>
+        """
+        let url = try XCTUnwrap(URL(string: "https://apis.example/playback/video?key=radio"))
+
+        XCTAssertTrue(DASHParser.parse(Data(xml.utf8), manifestURL: url).isEmpty)
+
+        let reps = DASHParser.parse(Data(xml.utf8), manifestURL: url, includeHLSAttributes: true)
+        let rep = try XCTUnwrap(reps.first)
+
+        XCTAssertEqual(rep.quality, 1080)
+        XCTAssertEqual(rep.url, "https://cdn.example/hls-aes/v1080/media.m3u8")
+        XCTAssertTrue(rep.isHLS)
+        XCTAssertTrue(rep.requiresRemoteHLS)
+        XCTAssertNil(rep.segmentPlan)
+    }
+
     func testSegmentPlanSelectsOnlyOverlappingClipParts() {
         let plan = VODSegmentPlan(initializationURL: "https://cdn.example/init.mp4", media: [
             VODMediaSegment(url: "https://cdn.example/part0.m4s", start: 0, duration: 4, index: 0),
@@ -666,6 +926,9 @@ final class CoreLogicTests: XCTestCase {
     func testVODDownloadStrategyAvoidsPrefixDownloadForClips() {
         let direct = VODVariant(quality: 1080, url: "https://media.example/video.mp4", isHLS: false)
         let hls = VODVariant(quality: 1080, url: "https://media.example/master.m3u8", isHLS: true)
+        let encryptedHLS = VODVariant(
+            quality: 1080, url: "https://media.example/hls-aes/media.m3u8",
+            isHLS: true, requiresRemoteHLS: true)
         let segmented = VODVariant(
             quality: 1080,
             url: "https://media.example/chunk_00001.m4s",
@@ -693,6 +956,10 @@ final class CoreLogicTests: XCTestCase {
         XCTAssertEqual(
             VODDownloader.strategy(variant: hls, audioOnly: false, clipStart: 10, clipEnd: 20),
             .hlsSegmentPrefetch
+        )
+        XCTAssertEqual(
+            VODDownloader.strategy(variant: encryptedHLS, audioOnly: false, clipStart: 10, clipEnd: 20),
+            .remoteFFmpegSeek
         )
         XCTAssertEqual(
             VODDownloader.strategy(variant: segmented, audioOnly: false, clipStart: 4.5, clipEnd: 6.5),
@@ -842,11 +1109,57 @@ final class CoreLogicTests: XCTestCase {
         XCTAssertTrue(args.contains("-sn"))
     }
 
+    func testRemoteHLSArgumentsAllowEncryptedPlaylistKeyRequests() {
+        let args = VODDownloader.remoteHLSArguments(
+            variantURL: "https://media.example/hls-aes/media.m3u8",
+            cookies: Cookies(NID_SES: "ses", NID_AUT: "aut"),
+            outURL: URL(fileURLWithPath: "/tmp/out.mp4"),
+            partURL: URL(fileURLWithPath: "/tmp/out.part"),
+            audioOnly: false,
+            clipStart: 12.345,
+            clipDuration: 6.5
+        )
+
+        guard let ssIndex = args.firstIndex(of: "-ss"),
+              let inputIndex = args.firstIndex(of: "-i"),
+              let durationIndex = args.firstIndex(of: "-t") else {
+            return XCTFail("expected -ss, -i, and -t in HLS ffmpeg arguments")
+        }
+
+        XCTAssertLessThan(ssIndex, inputIndex)
+        XCTAssertGreaterThan(durationIndex, inputIndex)
+        XCTAssertTrue(args.contains("-allowed_extensions"))
+        XCTAssertTrue(args.contains("ALL"))
+        XCTAssertTrue(args.contains("-extension_picky"))
+        XCTAssertTrue(args.contains("-protocol_whitelist"))
+        XCTAssertTrue(args.contains("file,http,https,tcp,tls,crypto"))
+        XCTAssertTrue(args.contains { $0.contains("NID_SES=ses") && $0.contains("NID_AUT=aut") })
+    }
+
     func testFormattedFFmpegSpeedAvoidsDoubleXAndRounds() {
         XCTAssertEqual(VODDownloader.formattedFFmpegSpeed("1.22345x", fallback: "N/A"), "1.22x")
         XCTAssertEqual(VODDownloader.formattedFFmpegSpeed("12.345x", fallback: "N/A"), "12.3x")
         XCTAssertEqual(VODDownloader.formattedFFmpegSpeed("0.9", fallback: "N/A"), "0.90x")
         XCTAssertEqual(VODDownloader.formattedFFmpegSpeed(nil, fallback: "N/A"), "N/A")
+    }
+
+    func testFormattedByteRateUsesOutputSizeDelta() {
+        XCTAssertEqual(
+            VODDownloader.formattedByteRate(
+                currentSize: 2 * 1024 * 1024,
+                previousSize: 1 * 1024 * 1024,
+                elapsed: 1.0,
+                fallback: "N/A"),
+            "1.00 MB/s"
+        )
+        XCTAssertEqual(
+            VODDownloader.formattedByteRate(
+                currentSize: 1024,
+                previousSize: 1024,
+                elapsed: 1.0,
+                fallback: "N/A"),
+            "N/A"
+        )
     }
 
     func testAudioOnlyFFmpegArgumentsMapOnlyAudio() {
@@ -986,6 +1299,19 @@ final class CoreLogicTests: XCTestCase {
 
         XCTAssertTrue(message.contains("Could not find tag for codec opus"))
         XCTAssertFalse(message.hasSuffix("Conversion failed!"))
+    }
+
+    func testFFmpegFailureMessageExplainsAuthorizedHLSKeyRejection() {
+        let message = VODDownloader.ffmpegFailureMessage(
+            prefix: "ffmpeg",
+            status: 1,
+            logTail: [
+                "Unable to open key file https://api.chzzk.naver.com/service/v1/encryption/videos/video/aes_key",
+                "HTTP error 403 Forbidden",
+            ])
+
+        XCTAssertTrue(message.contains("암호화 VOD 키 요청이 거부"))
+        XCTAssertTrue(message.contains("멤버십/시청 권한"))
     }
 
     func testFFmpegOutputCaptureKeepsUnterminatedFinalErrorLine() {
@@ -1131,6 +1457,31 @@ final class CoreLogicTests: XCTestCase {
         data.append(page)
 
         XCTAssertTrue(BinaryCookies.parse(data).isEmpty)
+    }
+
+    func testBinaryCookiesSurvivesCorruptCountAndTruncation() {
+        // A cookie count that far exceeds the page must not drive an out-of-range
+        // read (a hard crash). Header claims 1 page of 80 bytes but declares a
+        // bogus cookie count.
+        var data = Data("cook".utf8)
+        appendBE32(1, to: &data)
+        appendBE32(80, to: &data)
+        var page = Data(repeating: 0, count: 80)
+        writeLE32(1_000_000, into: &page, at: 4)   // absurd cookie count
+        writeLE32(16, into: &page, at: 8)
+        data.append(page)
+        XCTAssertTrue(BinaryCookies.parse(data).isEmpty)
+
+        // Truncated mid-page (declared page size exceeds the actual bytes).
+        var truncated = Data("cook".utf8)
+        appendBE32(1, to: &truncated)
+        appendBE32(80, to: &truncated)
+        truncated.append(Data(repeating: 0, count: 20))   // only 20 of 80 bytes
+        XCTAssertTrue(BinaryCookies.parse(truncated).isEmpty)
+
+        // Garbage after a valid magic must not crash either.
+        let garbage = Data("cook".utf8) + Data(repeating: 0xFF, count: 64)
+        _ = BinaryCookies.parse(garbage)
     }
 
     private func makeTemporaryDirectory() throws -> URL {

@@ -43,6 +43,28 @@ enum Validate {
         return m.range == range
     }
 
+    /// Extracts a Chzzk channel ID from whatever the user pasted: a bare ID, or a
+    /// full/partial channel URL such as `https://chzzk.naver.com/<id>`,
+    /// `chzzk.naver.com/live/<id>`, or any of those with a trailing path/query.
+    /// Returns the trimmed input unchanged when no URL pattern is found, so the
+    /// existing safeChannelID validation still has the final say.
+    static func extractChannelID(_ raw: String) -> String {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return text }
+        if let chzzkRange = text.range(of: "chzzk.naver.com/", options: .caseInsensitive) {
+            text = String(text[chzzkRange.upperBound...])
+            // Drop a leading "live/" (channel pages can appear as /live/<id>).
+            if let liveRange = text.range(of: "live/", options: [.caseInsensitive, .anchored]) {
+                text = String(text[liveRange.upperBound...])
+            }
+        }
+        // Keep only the first path component, dropping any /…, ?…, #… tail.
+        if let stop = text.firstIndex(where: { $0 == "/" || $0 == "?" || $0 == "#" }) {
+            text = String(text[..<stop])
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     static func clampInt(_ value: Int, _ min: Int, _ max: Int) -> Int {
         Swift.max(min, Swift.min(max, value))
     }
@@ -161,19 +183,24 @@ struct Channel: Codable, Identifiable, Hashable {
     /// When on (and a tag filter is set), an in-progress recording is finalized
     /// once the live's tags stop matching the filter.
     var stop_on_tag_mismatch: Bool = false
+    /// A one-off "quick record" channel that is not a permanent registration:
+    /// it is hidden from the channel list and removed automatically once its
+    /// single broadcast ends (or, if a crash left it behind, at next launch).
+    var ephemeral: Bool = false
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, output_dir, quality, tag_filter, stop_on_tag_mismatch
+        case id, name, output_dir, quality, tag_filter, stop_on_tag_mismatch, ephemeral
     }
 
     init(id: String, name: String, output_dir: String, quality: String = Defaults.liveQuality,
-         tag_filter: [String] = [], stop_on_tag_mismatch: Bool = false) {
+         tag_filter: [String] = [], stop_on_tag_mismatch: Bool = false, ephemeral: Bool = false) {
         self.id = id
         self.name = name
         self.output_dir = output_dir
         self.quality = Validate.normalizeLiveQuality(quality)
         self.tag_filter = Validate.normalizeTagFilter(tag_filter)
         self.stop_on_tag_mismatch = stop_on_tag_mismatch
+        self.ephemeral = ephemeral
     }
 
     init(from decoder: Decoder) throws {
@@ -186,6 +213,7 @@ struct Channel: Codable, Identifiable, Hashable {
         tag_filter = Validate.normalizeTagFilter(
             try c.decodeIfPresent([String].self, forKey: .tag_filter) ?? [])
         stop_on_tag_mismatch = try c.decodeIfPresent(Bool.self, forKey: .stop_on_tag_mismatch) ?? false
+        ephemeral = try c.decodeIfPresent(Bool.self, forKey: .ephemeral) ?? false
     }
 
     /// True when this channel's tag filter accepts a live with the given tags

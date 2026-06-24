@@ -75,6 +75,7 @@ struct SplitSizeRow: View {
 
 struct RecordingSettingsView: View {
     @Environment(AppModel.self) private var model
+    @State private var showResetConfirm = false
 
     var body: some View {
         @Bindable var model = model
@@ -84,23 +85,24 @@ struct RecordingSettingsView: View {
                     ForEach(Defaults.supportedFormats, id: \.self) { Text($0.uppercased()).tag($0) }
                 }
                 .pickerStyle(.segmented)
-                Text("라이브 녹화 컨테이너입니다 (ts·mkv·webm). 중단 내성은 ts > mkv 순. "
-                     + "VOD 다운로드는 mp4(또는 오디오만 m4a)로 저장되며 이 설정과 무관합니다.")
+                Text("녹화 파일 형식입니다. 권장: TS — 녹화가 중간에 끊겨도 그때까지의 영상이 그대로 남습니다. "
+                     + "VOD 다운로드는 항상 mp4(오디오만 받으면 m4a)로 저장되며 이 설정과 무관합니다.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("감지") {
-                IntFieldStepper(title: "재스캔 간격", value: $model.config.timeout,
+                IntFieldStepper(title: "방송 확인 주기", value: $model.config.timeout,
                                 range: Defaults.minRescanInterval...Defaults.maxRescanInterval,
                                 suffix: "초")
-                Text("각 채널의 방송 여부를 확인하는 주기입니다. 화살표로 조절하거나 숫자를 직접 입력하세요.")
+                Text("등록한 채널이 방송을 시작했는지 얼마마다 확인할지입니다. 권장: 60초. "
+                     + "화살표로 조절하거나 숫자를 직접 입력하세요.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("성능") {
-                IntFieldStepper(title: "세그먼트 스레드", value: $model.config.stream_segment_threads,
+                IntFieldStepper(title: "동시 받기 연결", value: $model.config.stream_segment_threads,
                                 range: Defaults.minThreads...Defaults.maxThreads)
-                Text("streamlink 다운로드 스레드 수. 저사양은 2, 고사양은 4를 권장합니다.")
+                Text("라이브 영상을 한 번에 몇 조각씩 받을지입니다. 권장: 2 (고사양 PC는 4).")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -132,8 +134,25 @@ struct RecordingSettingsView: View {
             // Re-encoding (was separate HEVC / AV1 tabs)
             EncoderSection(kind: .hevc)
             EncoderSection(kind: .av1)
+
+            Section {
+                Button(role: .destructive) { showResetConfirm = true } label: {
+                    Label("녹화 설정 기본값으로 되돌리기", systemImage: "arrow.counterclockwise")
+                }
+                Text("이 화면의 설정만 기본값으로 되돌립니다. 채널·쿠키·예약·저장 폴더는 그대로 유지됩니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .navigationTitle("녹화 설정")
+        .confirmationDialog("녹화 설정을 기본값으로 되돌릴까요?", isPresented: $showResetConfirm,
+                            titleVisibility: .visible) {
+            Button("기본값으로 되돌리기", role: .destructive) {
+                model.resetRecordingSettingsToDefaults()
+            }
+            Button("취소", role: .cancel) {}
+        } message: {
+            Text("포맷·확인 주기·동시 받기 연결·파일 분할·순환 녹화·재인코딩이 초기값으로 돌아갑니다.")
+        }
     }
 }

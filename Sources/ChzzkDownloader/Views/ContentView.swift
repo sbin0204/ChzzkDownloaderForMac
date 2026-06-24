@@ -79,6 +79,14 @@ struct ContentView: View {
                 .environment(model)
                 .tint(.brand)
         }
+        .sheet(isPresented: Binding(
+            get: { model.showWelcome },
+            set: { if !$0 { model.dismissWelcome() } }
+        )) {
+            WelcomeView()
+                .environment(model)
+                .tint(.brand)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .chzzkSelectSidebarItem)) { notification in
             guard let rawValue = notification.object as? String,
                   let item = SidebarItem(rawValue: rawValue) else { return }

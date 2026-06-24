@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.3.0
+
+- Added VOD source import: paste a direct `vod_chunklist.m3u8` / `vod_playlist.m3u8` / `.mpd` / `.mp4` URL to download it, in addition to regular Chzzk video/clip links.
+- Routed AES-encrypted imported HLS sources through ffmpeg so they decode correctly instead of producing a broken file.
+- Added a first-launch welcome guide that explains the required tools (ffmpeg, streamlink) with a copyable install command and a live installed/not-installed check.
+- The dashboard now shows an actionable banner with a copyable install command when ffmpeg or streamlink is missing, instead of only warning when recording starts.
+- The channel field now accepts a full channel address pasted as-is and extracts the ID automatically.
+- Renamed jargon settings labels to plainer terms and marked recommended values.
+- Added a "reset recording settings to defaults" button that preserves channels, cookies, schedules, and folders.
+- Recordings now finish writing their container (and rename the file) before the app quits, so long MKV/MP4 recordings stay playable instead of showing 00:00.
+- Fixed a crash that could occur while importing cookies from a corrupt or truncated Safari cookie file.
+
 ## 1.2.0
 
 - Added live broadcast category and tag display in the dashboard for channels that are currently live.

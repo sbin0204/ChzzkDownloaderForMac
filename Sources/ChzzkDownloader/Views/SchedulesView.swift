@@ -9,28 +9,45 @@ struct SchedulesView: View {
     }
 
     var body: some View {
-        Group {
-            if model.config.channels.isEmpty {
-                ContentUnavailableView("채널 없음", systemImage: "person.2",
-                    description: Text("먼저 ‘채널’에서 채널을 추가하세요."))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if schedules.isEmpty {
-                ContentUnavailableView("예약 없음", systemImage: "calendar.badge.clock",
-                    description: Text("툴바의 +, 또는 ⌘N으로 채널을 지정한 시각에 자동 녹화하도록 예약하세요."))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List {
-                    ForEach(schedules) { ScheduleRow(schedule: $0) }
+        VStack(alignment: .leading, spacing: 14) {
+            if !schedules.isEmpty {
+                HStack {
+                    SummaryTile(title: "예약", value: "\(schedules.count)", systemImage: "calendar.badge.clock")
+                    SummaryTile(
+                        title: "진행 중",
+                        value: "\(schedules.filter(\.started).count)",
+                        systemImage: "record.circle",
+                        tint: schedules.contains(where: \.started) ? .onAir : .secondary)
                 }
-                .listStyle(.inset(alternatesRowBackgrounds: true))
+            }
+
+            Group {
+                if model.registeredChannels.isEmpty {
+                    ContentUnavailableView("채널 없음", systemImage: "person.2",
+                        description: Text("먼저 ‘채널’에서 채널을 추가하세요."))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if schedules.isEmpty {
+                    ContentUnavailableView("예약 없음", systemImage: "calendar.badge.clock",
+                        description: Text("툴바의 +, 또는 ⌘N으로 채널을 지정한 시각에 자동 녹화하도록 예약하세요."))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List {
+                        ForEach(schedules) { ScheduleRow(schedule: $0) }
+                    }
+                    .listStyle(.inset(alternatesRowBackgrounds: true))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5))
+                }
             }
         }
+        .pageContentPadding()
         .navigationTitle("예약 녹화")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button { showAdd = true } label: { Label("예약 추가", systemImage: "plus") }
                     .keyboardShortcut("n", modifiers: .command)
-                    .disabled(model.config.channels.isEmpty)
+                    .disabled(model.registeredChannels.isEmpty)
                     .help("예약 추가 (⌘N)")
             }
         }
@@ -48,6 +65,9 @@ struct ScheduleRow: View {
         HStack(spacing: 12) {
             Image(systemName: schedule.started ? "record.circle.fill" : "calendar.badge.clock")
                 .foregroundStyle(schedule.started ? Color.onAir : .secondary)
+                .frame(width: 28, height: 28)
+                .background((schedule.started ? Color.onAir : Color.secondary).opacity(0.10),
+                            in: RoundedRectangle(cornerRadius: 6))
             VStack(alignment: .leading, spacing: 2) {
                 Text(ch?.name ?? schedule.channelID).fontWeight(.medium)
                 Text("\(dateText) · \(schedule.durationMinutes == 0 ? "방송 끝까지" : "\(schedule.durationMinutes)분")"
@@ -56,9 +76,10 @@ struct ScheduleRow: View {
             }
             Spacer()
             Button(role: .destructive) { showDeleteConfirm = true } label: {
-                Image(systemName: "trash").foregroundStyle(.red)
+                Label("삭제", systemImage: "trash")
             }
-            .buttonStyle(.borderless).controlSize(.small).help("예약 삭제")
+            .controlSize(.small)
+            .help("예약 삭제")
         }
         .padding(.vertical, 4)
         .confirmationDialog("이 예약을 삭제할까요?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
@@ -96,7 +117,7 @@ struct ScheduleAddSheet: View {
             Text("예약 추가").font(.title3).bold()
             Form {
                 Picker("채널", selection: $channelID) {
-                    ForEach(model.config.channels) { Text($0.name).tag($0.id) }
+                    ForEach(model.registeredChannels) { Text($0.name).tag($0.id) }
                 }
                 DatePicker("시작 시각", selection: $start, in: Date()...)
                 Stepper(value: $duration, in: 0...1440, step: 10) {
@@ -116,6 +137,6 @@ struct ScheduleAddSheet: View {
         }
         .padding(20)
         .frame(width: 440)
-        .onAppear { if channelID.isEmpty { channelID = model.config.channels.first?.id ?? "" } }
+        .onAppear { if channelID.isEmpty { channelID = model.registeredChannels.first?.id ?? "" } }
     }
 }

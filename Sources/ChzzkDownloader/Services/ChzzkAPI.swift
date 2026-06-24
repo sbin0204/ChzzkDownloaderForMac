@@ -10,6 +10,18 @@ struct LiveInfo {
     /// False when the live is OPEN but exposes no playback media (adult stream
     /// without auth, region block, …) — streamlink would fail instantly.
     var hasMedia: Bool = true
+    /// Current-frame thumbnail (liveImageUrl with its {type} size token resolved).
+    var thumbnailURL: String = ""
+    var viewerCount: Int = 0
+    var openDate: String = ""   // "yyyy-MM-dd HH:mm:ss" — used to show uptime
+}
+
+struct ChannelProfile: Equatable {
+    var channelID: String
+    var channelName: String
+    var channelImageURL: String?
+    var followerCount: Int?
+    var openLive: Bool
 }
 
 enum LiveInfoFetchResult {
@@ -20,6 +32,7 @@ enum LiveInfoFetchResult {
 /// Polls the Chzzk live-detail API, mirroring get_live_info / get_auth_headers.
 enum ChzzkAPI {
     static let liveDetailURL = "https://api.chzzk.naver.com/service/v3/channels/%@/live-detail"
+    static let channelProfileURL = "https://api.chzzk.naver.com/service/v1/channels/%@"
 
     static func cookieHeader(_ cookies: Cookies) -> String {
         let aut = Validate.sanitizeCookie(cookies.NID_AUT)
@@ -70,12 +83,58 @@ enum ChzzkAPI {
             let tags = (content["tags"] as? [Any])?.compactMap { $0 as? String } ?? []
             let category = content["liveCategoryValue"] as? String ?? ""
             let hasMedia = (content["livePlaybackJson"] as? String).map { !$0.isEmpty } ?? false
+            // liveImageUrl carries a {type} token for the size variant, e.g.
+            // ".../live_xxx_{type}.jpg" — resolve it to a 480p thumbnail.
+            let thumbnail = (content["liveImageUrl"] as? String)?
+                .replacingOccurrences(of: "{type}", with: "480") ?? ""
+            let viewerCount = content["concurrentUserCount"] as? Int ?? 0
+            let openDate = content["openDate"] as? String ?? ""
             return .info(LiveInfo(
                 status: status, liveTitle: title, channelName: channelName,
-                adult: adult, tags: tags, category: category, hasMedia: hasMedia))
+                adult: adult, tags: tags, category: category, hasMedia: hasMedia,
+                thumbnailURL: thumbnail, viewerCount: viewerCount, openDate: openDate))
         } catch {
             return .info(nil)
         }
+    }
+
+    static func fetchChannelProfile(channelID: String) async -> ChannelProfile? {
+        guard Validate.matches(Validate.safeChannelID, channelID),
+              let url = URL(string: String(format: channelProfileURL, channelID)) else {
+            return nil
+        }
+        var request = URLRequest(url: url, timeoutInterval: 15)
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", forHTTPHeaderField: "User-Agent")
+        request.setValue("https://chzzk.naver.com", forHTTPHeaderField: "Origin")
+        request.setValue("https://chzzk.naver.com/", forHTTPHeaderField: "Referer")
+
+        do {
+            let (data, response) = try await ProxySupport.session().data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+            return parseChannelProfileResponse(data)
+        } catch {
+            return nil
+        }
+    }
+
+    static func parseChannelProfileResponse(_ data: Data) -> ChannelProfile? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let content = json["content"] as? [String: Any] else {
+            return nil
+        }
+        let channelID = content["channelId"] as? String ?? ""
+        let channelName = content["channelName"] as? String ?? ""
+        guard !channelID.isEmpty, !channelName.isEmpty else { return nil }
+
+        let rawImageURL = (content["channelImageUrl"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let followerCount = (content["followerCount"] as? NSNumber)?.intValue
+        return ChannelProfile(
+            channelID: channelID,
+            channelName: channelName,
+            channelImageURL: rawImageURL?.isEmpty == false ? rawImageURL : nil,
+            followerCount: followerCount,
+            openLive: content["openLive"] as? Bool ?? false)
     }
 
     static func isAuthFailureStatus(_ statusCode: Int) -> Bool {

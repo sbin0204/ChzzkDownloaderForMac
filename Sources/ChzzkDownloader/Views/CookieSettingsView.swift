@@ -133,7 +133,9 @@ private struct ToolPathRow: View {
                     .textFieldStyle(.roundedBorder)
                 Button("찾아보기…") { pick() }
                 if !customPath.isEmpty {
-                    Button { customPath = "" } label: { Image(systemName: "arrow.uturn.backward") }
+                    Button { customPath = "" } label: {
+                        Label("자동", systemImage: "arrow.uturn.backward")
+                    }
                         .help("자동 감지로 되돌리기")
                 }
             }

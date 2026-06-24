@@ -23,15 +23,82 @@ extension View {
     /// Uses a hierarchical fill + hairline separator instead of pure-black overlays.
     func cardSurface(cornerRadius: CGFloat = 8) -> some View {
         self
-            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: cornerRadius))
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius))
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius)
                     .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
             )
     }
 
+    func pageContentPadding() -> some View {
+        self
+            .padding(.horizontal, 22)
+            .padding(.vertical, 18)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
     /// Tabular figures for data that should line up column-to-column.
     func dataFigures() -> some View { self.monospacedDigit() }
+}
+
+struct SectionTitle: View {
+    let title: String
+    var detail: String?
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(AppLocalization.string(title))
+                .font(.headline)
+            if let detail {
+                Spacer()
+                Text(AppLocalization.string(detail))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+}
+
+struct SummaryTile: View {
+    let title: String
+    let value: String
+    let systemImage: String
+    var tint: Color = .brand
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.title3)
+                .foregroundStyle(tint)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(AppLocalization.string(title))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.title3.weight(.semibold))
+                    .monospacedDigit()
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .cardSurface()
+    }
+}
+
+struct StatusPill: View {
+    let text: String
+    let systemImage: String
+    var tint: Color
+
+    var body: some View {
+        Label(AppLocalization.string(text), systemImage: systemImage)
+            .font(.caption.weight(.medium))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(tint.opacity(0.12), in: Capsule())
+            .foregroundStyle(tint)
+    }
 }
 
 /// Lightweight optimistic-UI toast — slides up from the bottom on a material pill.

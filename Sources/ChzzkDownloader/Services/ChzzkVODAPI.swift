@@ -18,6 +18,7 @@ enum VODError: LocalizedError {
     case unencoded
     case noManifest
     case http(Int)
+    case server(code: Int, message: String)
     case downloadIncomplete
 
     var errorDescription: String? {
@@ -27,6 +28,11 @@ enum VODError: LocalizedError {
         case .unencoded: return "아직 인코딩되지 않은 영상입니다 (.m3u8)."
         case .noManifest: return "매니페스트를 가져오지 못했습니다."
         case .http(let code): return "네트워크 오류 (HTTP \(code))."
+        case .server(let code, let message):
+            if code == 9003 {
+                return "\(message) 삭제된 영상은 공식 API로 새 재생 주소를 받을 수 없습니다. (code \(code))"
+            }
+            return "치지직 서버가 요청을 거부했습니다: \(message) (code \(code))"
         case .downloadIncomplete: return "다운로드 임시 파일이 사라져 완료하지 못했습니다. 다시 시도해 주세요(처음부터 다시 받습니다)."
         }
     }
@@ -81,7 +87,9 @@ enum ChzzkVODAPI {
         let content = json["content"] as? [String: Any] ?? [:]
         let videoId = content["videoId"] as? String
         let inKey = content["inKey"] as? String
+        let radioModeInKey = content["radioModeInKey"] as? String
         let adult = content["adult"] as? Bool ?? false
+        let encrypted = (content["encryptionType"] as? String)?.localizedCaseInsensitiveCompare("AES") == .orderedSame
         let liveRewind = content["liveRewindPlaybackJson"] as? String
 
         let meta = VODMeta(
@@ -93,17 +101,32 @@ enum ChzzkVODAPI {
 
         let variants: [VODVariant]
         if let videoId, let inKey {
-            do {
-                variants = try await dashVariants(videoId: videoId, inKey: inKey)
-            } catch {
-                if let rewind = liveRewind, !rewind.isEmpty {
-                    variants = try await m3u8Variants(rewindJson: rewind)
-                } else {
-                    throw error
+            if encrypted {
+                variants = try await authorizedHLSVariants(videoId: videoId, inKey: inKey)
+            } else {
+                do {
+                    let resolved = try await dashVariants(videoId: videoId, inKey: inKey)
+                    if resolved.isEmpty, let radioModeInKey {
+                        variants = try await authorizedHLSVariants(videoId: videoId, inKey: radioModeInKey)
+                    } else if resolved.isEmpty {
+                        variants = try await authorizedHLSVariants(videoId: videoId, inKey: inKey)
+                    } else {
+                        variants = resolved
+                    }
+                } catch {
+                    if let rewind = liveRewind, !rewind.isEmpty {
+                        variants = try await m3u8Variants(rewindJson: rewind)
+                    } else if let radioModeInKey {
+                        variants = try await authorizedHLSVariants(videoId: videoId, inKey: radioModeInKey)
+                    } else {
+                        throw error
+                    }
                 }
             }
         } else if let rewind = liveRewind, !rewind.isEmpty {
             variants = try await m3u8Variants(rewindJson: rewind)
+        } else if let videoId, let radioModeInKey {
+            variants = try await authorizedHLSVariants(videoId: videoId, inKey: radioModeInKey)
         } else {
             throw VODError.noManifest
         }
@@ -112,6 +135,16 @@ enum ChzzkVODAPI {
     }
 
     private static func dashVariants(videoId: String, inKey: String) async throws -> [VODVariant] {
+        try await playbackVariants(videoId: videoId, inKey: inKey, includeHLSAttributes: false)
+    }
+
+    private static func authorizedHLSVariants(videoId: String, inKey: String) async throws -> [VODVariant] {
+        try await playbackVariants(videoId: videoId, inKey: inKey, includeHLSAttributes: true)
+            .filter { $0.isHLS }
+    }
+
+    private static func playbackVariants(videoId: String, inKey: String,
+                                         includeHLSAttributes: Bool) async throws -> [VODVariant] {
         let manifestURL = try playbackURL(videoId: videoId, inKey: inKey)
         var req = URLRequest(url: manifestURL, timeoutInterval: 30)
         req.setValue("application/dash+xml", forHTTPHeaderField: "Accept")
@@ -120,8 +153,12 @@ enum ChzzkVODAPI {
         req.setValue(VODRequestHeaders.origin, forHTTPHeaderField: "Origin")
         let (data, resp) = try await ProxySupport.session().data(for: req)
         try check(resp)
-        let reps = DASHParser.parse(data, manifestURL: manifestURL)
-        return reps.map { VODVariant(quality: $0.quality, url: $0.url, segmentPlan: $0.segmentPlan) }
+        let reps = DASHParser.parse(data, manifestURL: manifestURL, includeHLSAttributes: includeHLSAttributes)
+        return reps.map {
+            VODVariant(
+                quality: $0.quality, url: $0.url, isHLS: $0.isHLS,
+                requiresRemoteHLS: $0.requiresRemoteHLS, segmentPlan: $0.segmentPlan)
+        }
             .sorted { $0.quality < $1.quality }
     }
 
@@ -200,7 +237,11 @@ enum ChzzkVODAPI {
         req.setValue(ChzzkAPI.cookieHeader(cookies), forHTTPHeaderField: "Cookie")
         let (data, resp) = try await ProxySupport.session().data(for: req)
         try check(resp)
-        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        let json = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        if let code = json["code"] as? Int, code != 200 {
+            throw VODError.server(code: code, message: serverMessage(from: json))
+        }
+        return json
     }
 
     private static func check(_ resp: URLResponse) throws {
@@ -228,13 +269,29 @@ enum ChzzkVODAPI {
     static func sanitize(_ s: String) -> String {
         Validate.sanitizeFilename(s, fallback: "video")
     }
+
+    private static func serverMessage(from json: [String: Any]) -> String {
+        let raw = (json["message"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let singleLine = raw.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        return singleLine.isEmpty ? "알 수 없는 오류입니다." : String(singleLine.prefix(200))
+    }
 }
 
 /// DASH MPD parser: collects Representation URLs and, when present, concrete
 /// SegmentTemplate/SegmentTimeline parts. Partial VOD downloads rely on this
 /// part list to avoid downloading from 0 seconds before cutting locally.
 final class DASHParser: NSObject, XMLParserDelegate {
-    struct Rep { var quality: Int; var url: String; var segmentPlan: VODSegmentPlan? }
+    struct Rep {
+        var quality: Int
+        var url: String
+        var isHLS: Bool = false
+        var requiresRemoteHLS: Bool = false
+        var segmentPlan: VODSegmentPlan?
+    }
 
     private struct SegmentTemplateInfo {
         var timescale: Double = 1
@@ -260,6 +317,8 @@ final class DASHParser: NSObject, XMLParserDelegate {
     private var curW = 0, curH = 0
     private var curRepresentationID = ""
     private var curBandwidth: Int?
+    private var curM3UURL: String?
+    private var curHasContentProtection = false
     private var inRep = false
     private var inAdaptation = false
     private var capturingBaseURL = false
@@ -274,10 +333,12 @@ final class DASHParser: NSObject, XMLParserDelegate {
     private var openTemplateScope: TemplateScope?
     private var elementStack: [String] = []
     private var mediaPresentationDuration: Double?
+    private var includeHLSAttributes = false
 
-    static func parse(_ data: Data, manifestURL: URL) -> [Rep] {
+    static func parse(_ data: Data, manifestURL: URL, includeHLSAttributes: Bool = false) -> [Rep] {
         let p = DASHParser()
         p.manifestURL = manifestURL
+        p.includeHLSAttributes = includeHLSAttributes
         let parser = XMLParser(data: data)
         parser.delegate = p
         parser.parse()
@@ -303,8 +364,12 @@ final class DASHParser: NSObject, XMLParserDelegate {
             curH = Int(attrs["height"] ?? "") ?? 0
             curRepresentationID = attrs["id"] ?? ""
             curBandwidth = Int(attrs["bandwidth"] ?? "")
+            curM3UURL = Self.attribute("m3u", in: attrs)
+            curHasContentProtection = false
             representationBaseURL = nil
             representationTemplate = nil
+        } else if element == "ContentProtection", inRep {
+            curHasContentProtection = true
         } else if element == "BaseURL" {
             capturingBaseURL = true
             baseURLText = ""
@@ -379,14 +444,37 @@ final class DASHParser: NSObject, XMLParserDelegate {
     }
 
     private func finishRepresentation() {
+        if includeHLSAttributes, curW > 0, curH > 0,
+           let hlsURL = curM3UURL, !hlsURL.isEmpty {
+            let requiresRemote = curHasContentProtection || hlsURL.localizedCaseInsensitiveContains("hls-aes")
+            reps.append(Rep(
+                quality: min(curW, curH), url: hlsURL,
+                isHLS: true, requiresRemoteHLS: requiresRemote))
+            return
+        }
+
+        let template = representationTemplate ?? adaptationTemplate
+        guard template != nil || hasExplicitBaseURL else { return }
         guard curW > 0, curH > 0, let baseURL = resolvedBaseURL() else { return }
         let directURL = baseURL.absoluteString
         guard !directURL.hasSuffix("/hls/") else { return }
 
-        let template = representationTemplate ?? adaptationTemplate
         let segmentPlan = buildSegmentPlan(template: template, baseURL: baseURL)
         let mediaURL = segmentPlan?.media.first?.url
         reps.append(Rep(quality: min(curW, curH), url: mediaURL ?? directURL, segmentPlan: segmentPlan))
+    }
+
+    private var hasExplicitBaseURL: Bool {
+        [mpdBaseURL, periodBaseURL, adaptationBaseURL, representationBaseURL].contains {
+            ($0?.isEmpty == false)
+        }
+    }
+
+    private static func attribute(_ localName: String, in attrs: [String: String]) -> String? {
+        if let exact = attrs[localName] { return exact }
+        return attrs.first { key, _ in
+            key.split(separator: ":").last.map(String.init) == localName
+        }?.value
     }
 
     private func currentBaseURLScope() -> String {
