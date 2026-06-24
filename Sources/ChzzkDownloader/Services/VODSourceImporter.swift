@@ -292,18 +292,19 @@ enum VODSourceImporter {
 
     private static func sortSegments(_ segments: [HARMediaSegment]) -> [HARMediaSegment] {
         var seen = Set<String>()
-        return segments
-            .filter { seen.insert($0.url).inserted }
-            .sorted {
-                switch ($0.timestampMS, $1.timestampMS) {
-                case let (lhs?, rhs?) where lhs != rhs:
-                    return lhs < rhs
-                case _ where $0.sequence != $1.sequence:
-                    return ($0.sequence ?? Int.max) < ($1.sequence ?? Int.max)
-                default:
-                    return $0.entryIndex < $1.entryIndex
-                }
+        var unique: [HARMediaSegment] = []
+        for segment in segments where seen.insert(segment.url).inserted {
+            unique.append(segment)
+        }
+        // Plain comparator (no tuple-pattern switch) so the type checker stays fast
+        // on stricter toolchains: timestamp first, then sequence, then capture order.
+        return unique.sorted { lhs, rhs in
+            if let l = lhs.timestampMS, let r = rhs.timestampMS, l != r { return l < r }
+            if lhs.sequence != rhs.sequence {
+                return (lhs.sequence ?? Int.max) < (rhs.sequence ?? Int.max)
             }
+            return lhs.entryIndex < rhs.entryIndex
+        }
     }
 
     private static func buildMediaSegments(_ segments: [HARMediaSegment]) -> [VODMediaSegment] {
@@ -331,10 +332,15 @@ enum VODSourceImporter {
     }
 
     private static func inferredSegmentDuration(_ segments: [HARMediaSegment]) -> Double? {
-        let timestamps = segments.compactMap(\.timestampMS).sorted()
-        let deltas = zip(timestamps, timestamps.dropFirst())
-            .map { Double($1 - $0) / 1000.0 }
-            .filter { $0 > 0 && $0 <= 30 }
+        // Explicit loop instead of zip().map().filter(): the chained-closure form
+        // makes Swift's type checker time out on stricter toolchains (CI).
+        let timestamps: [Int64] = segments.compactMap(\.timestampMS).sorted()
+        guard timestamps.count > 1 else { return nil }
+        var deltas: [Double] = []
+        for i in 1..<timestamps.count {
+            let delta = Double(timestamps[i] - timestamps[i - 1]) / 1000.0
+            if delta > 0, delta <= 30 { deltas.append(delta) }
+        }
         guard !deltas.isEmpty else { return nil }
         return deltas.sorted()[deltas.count / 2]
     }
