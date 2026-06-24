@@ -1,6 +1,20 @@
 // swift-tools-version: 5.9
 import PackageDescription
 
+// Debug-only: warn when an expression or function body takes too long to
+// type-check. These are the slow spots that compile locally but can exceed the
+// CI toolchain's type-checker budget ("unable to type-check in reasonable
+// time"). Warnings only, and only in debug builds, so `swift build`/`swift test`
+// and CI surface them while release/DMG builds stay clean.
+let typeCheckWarnings: [SwiftSetting] = [
+    .unsafeFlags(
+        [
+            "-Xfrontend", "-warn-long-expression-type-checking=500",
+            "-Xfrontend", "-warn-long-function-bodies=800",
+        ],
+        .when(configuration: .debug)),
+]
+
 let package = Package(
     name: "ChzzkDownloader",
     defaultLocalization: "en",
@@ -20,7 +34,8 @@ let package = Package(
             ],
             resources: [
                 .process("Resources")
-            ]
+            ],
+            swiftSettings: typeCheckWarnings
         ),
         .testTarget(
             name: "ChzzkDownloaderTests",
