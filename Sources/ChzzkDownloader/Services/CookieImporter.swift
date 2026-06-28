@@ -78,7 +78,7 @@ enum CookieImportError: LocalizedError {
         switch self {
         case .notInstalled: return "해당 브라우저를 찾을 수 없습니다."
         case .keychainDenied: return "키체인 접근이 거부되었습니다. 다시 시도하고 '항상 허용'을 눌러주세요."
-        case .needsFullDiskAccess: return "Safari 쿠키를 읽으려면 ‘전체 디스크 접근’ 권한이 필요합니다."
+        case .needsFullDiskAccess: return "브라우저 쿠키를 읽으려면 ‘전체 디스크 접근’ 권한이 필요합니다."
         case .noCookies: return "이 브라우저에서 치지직(naver.com) 로그인 쿠키를 찾지 못했습니다. 먼저 브라우저에서 로그인하세요."
         case .readFailed(let m): return "쿠키를 읽지 못했습니다: \(m)"
         }
@@ -234,7 +234,13 @@ enum CookieImporter {
         // 권한이 없기 때문에…"). A plain read + write avoids that.
         let data: Data
         do { data = try Data(contentsOf: URL(fileURLWithPath: dbPath)) }
-        catch { throw CookieImportError.readFailed("쿠키 DB를 읽지 못했습니다: \(error.localizedDescription)") }
+        catch {
+            // The file is the user's own (mode 0600) but macOS TCC still blocks an
+            // app without Full Disk Access from reading another app's data, surfacing
+            // as a permission error. Route it to the Full Disk Access guidance.
+            if isPermissionDenied(error) { throw CookieImportError.needsFullDiskAccess }
+            throw CookieImportError.readFailed("쿠키 DB를 읽지 못했습니다: \(error.localizedDescription)")
+        }
 
         let copy = try writeTemporaryCopy(data, suffix: ".db")
         defer { try? FileManager.default.removeItem(at: copy) }
@@ -249,6 +255,18 @@ enum CookieImporter {
             guard parts.count == 2 else { return nil }
             return (parts[0], parts[1])
         }
+    }
+
+    /// True when `error` is a macOS permission denial (Cocoa "no permission" or an
+    /// underlying POSIX EACCES) — i.e. the app needs Full Disk Access.
+    private static func isPermissionDenied(_ error: Error) -> Bool {
+        var current: NSError? = error as NSError
+        while let e = current {
+            if e.domain == NSCocoaErrorDomain, e.code == NSFileReadNoPermissionError { return true }
+            if e.domain == NSPOSIXErrorDomain, e.code == Int(EACCES) { return true }
+            current = e.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return false
     }
 
     /// Writes `data` to a uniquely-named temp file, falling back from the system

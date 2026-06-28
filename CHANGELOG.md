@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.3
+
+- Browser cookie auto-import now explains what to do when it is blocked: a permission failure routes to clear Full Disk Access guidance (Chrome/Firefox) instead of a raw error, and the cookie settings spell out that Safari is not supported on recent macOS and that manual entry / cookies.txt need no permissions. Also notes that Full Disk Access may need re-granting after an app update.
+
 ## 1.3.2
 
 - Fixed Chrome/Firefox cookie import failing with a "permission to access 'T'" error: the cookie database is now snapshotted by reading its bytes (instead of a metadata-preserving file copy) and falls back to the app caches directory when the system temp folder is not writable.

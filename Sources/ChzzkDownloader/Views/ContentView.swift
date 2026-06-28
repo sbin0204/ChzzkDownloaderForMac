@@ -119,7 +119,7 @@ struct ContentView: View {
             }
             Button(AppLocalization.string("취소"), role: .cancel) {}
         } message: {
-            Text(AppLocalization.string("Safari 쿠키를 읽으려면 ‘전체 디스크 접근’ 권한이 필요합니다.\n\n시스템 설정 → 개인정보 보호 및 보안 → 전체 디스크 접근에서 ‘Chzzk Downloader for Mac’을 켠 뒤, 앱을 다시 실행해 주세요."))
+            Text(AppLocalization.string("브라우저 쿠키를 읽으려면 ‘전체 디스크 접근’ 권한이 필요합니다.\n\n시스템 설정 → 개인정보 보호 및 보안 → 전체 디스크 접근에서 ‘Chzzk Downloader for Mac’을 켠 뒤, 앱을 다시 실행해 주세요.\n\n앱을 업데이트하면 다시 허용해야 할 수 있고, Safari는 최신 macOS에서 지원되지 않습니다. 잘 안 되면 쿠키를 직접 입력하거나 cookies.txt를 사용하세요."))
         }
         .alert("치지직 쿠키 갱신 필요", isPresented: Binding(
             get: { model.cookieAuthWarning != nil },

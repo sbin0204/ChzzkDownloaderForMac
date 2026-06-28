@@ -36,7 +36,7 @@
 "Homebrew 설치 페이지" = "Homebrew Install Page";
 "전체 디스크 접근 권한 필요" = "Full Disk Access Required";
 "시스템 설정 열기" = "Open System Settings";
-"Safari 쿠키를 읽으려면 ‘전체 디스크 접근’ 권한이 필요합니다.\n\n시스템 설정 → 개인정보 보호 및 보안 → 전체 디스크 접근에서 ‘Chzzk Downloader for Mac’을 켠 뒤, 앱을 다시 실행해 주세요." = "Full Disk Access is required to read Safari cookies.\n\nOpen System Settings > Privacy & Security > Full Disk Access, enable Chzzk Downloader for Mac, then relaunch the app.";
+"브라우저 쿠키를 읽으려면 ‘전체 디스크 접근’ 권한이 필요합니다.\n\n시스템 설정 → 개인정보 보호 및 보안 → 전체 디스크 접근에서 ‘Chzzk Downloader for Mac’을 켠 뒤, 앱을 다시 실행해 주세요.\n\n앱을 업데이트하면 다시 허용해야 할 수 있고, Safari는 최신 macOS에서 지원되지 않습니다. 잘 안 되면 쿠키를 직접 입력하거나 cookies.txt를 사용하세요." = "Full Disk Access is required to read browser cookies.\n\nOpen System Settings > Privacy & Security > Full Disk Access, enable Chzzk Downloader for Mac, then relaunch the app.\n\nYou may need to re-enable it after updating the app, and Safari is not supported on recent macOS. If it still fails, enter cookies manually or use a cookies.txt file.";
 "구간 선택" = "Select Segment";
 "영상을 찾을 수 없습니다" = "Video not found";
 "설정 열기" = "Open Settings";
@@ -73,7 +73,7 @@
 "config.json, downloads.json, log.log는 사용자 앱 지원 폴더에 저장되고 파일 권한은 0600으로 제한됩니다." = "config.json, downloads.json, and log.log are stored in the user's Application Support folder with file permissions restricted to 0600.";
 "로그 파일 기록을 켜면 앱 동작 로그가 같은 폴더의 log.log에 저장됩니다." = "If file logging is enabled, app activity logs are written to log.log in the same folder.";
 "NID_AUT / NID_SES는 성인 인증 또는 로그인 필요한 콘텐츠 접근에만 사용됩니다." = "NID_AUT / NID_SES are used only for adult-verified or login-required content.";
-"브라우저 쿠키 가져오기는 선택한 브라우저의 로컬 쿠키 저장소를 읽으며, Safari는 전체 디스크 접근 권한이 필요할 수 있습니다." = "Browser cookie import reads the selected browser's local cookie store; Safari may require Full Disk Access.";
+"브라우저 쿠키 자동 가져오기(Chrome·Firefox)는 ‘전체 디스크 접근’ 권한이 필요하며, Safari는 최신 macOS에서 지원되지 않습니다. 권한 없이 쓰려면 쿠키 직접 입력 또는 cookies.txt를 사용하세요." = "Automatic browser cookie import (Chrome/Firefox) requires Full Disk Access; Safari is not supported on recent macOS. To use it without permissions, enter cookies manually or use a cookies.txt file.";
 "앱은 CHZZK/NAVER 콘텐츠 정보와 미디어 다운로드 요청을 보냅니다." = "The app sends CHZZK/NAVER content metadata and media download requests.";
 "Sparkle 업데이트가 설정된 경우 appcast URL에 업데이트 확인 요청을 보냅니다." = "If Sparkle updates are configured, the app sends update-check requests to the appcast URL.";
 "웹훅 URL을 설정하면 녹화 시작·완료와 다운로드 완료 시 해당 HTTPS 주소로 알림 요청을 보냅니다." = "If a webhook URL is configured, the app sends notification requests to that HTTPS endpoint when recording starts or completes and downloads finish.";

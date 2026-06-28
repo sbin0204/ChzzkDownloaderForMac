@@ -199,7 +199,7 @@ private struct PrivacyPane: View {
 
             InfoBlock("쿠키 사용", lines: [
                 "NID_AUT / NID_SES는 성인 인증 또는 로그인 필요한 콘텐츠 접근에만 사용됩니다.",
-                "브라우저 쿠키 가져오기는 선택한 브라우저의 로컬 쿠키 저장소를 읽으며, Safari는 전체 디스크 접근 권한이 필요할 수 있습니다."
+                "브라우저 쿠키 자동 가져오기(Chrome·Firefox)는 ‘전체 디스크 접근’ 권한이 필요하며, Safari는 최신 macOS에서 지원되지 않습니다. 권한 없이 쓰려면 쿠키 직접 입력 또는 cookies.txt를 사용하세요."
             ])
 
             InfoBlock("네트워크", lines: [

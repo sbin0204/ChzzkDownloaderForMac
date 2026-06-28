@@ -54,8 +54,12 @@ struct CookieSettingsView: View {
                     }
                 }
 
-                Text("로그인된 브라우저에서 자동으로 가져오거나, Netscape 형식 cookies.txt 파일에서 가져옵니다. "
-                     + "Chrome 계열은 키체인 허용, Safari는 전체 디스크 접근이 필요할 수 있습니다.")
+                Text("자동 가져오기(Chrome·Firefox)는 macOS ‘전체 디스크 접근’ 권한이 필요합니다. "
+                     + "안내가 뜨면 시스템 설정에서 허용한 뒤 앱을 다시 실행하세요. "
+                     + "이 앱은 Apple 공증을 받지 않아, 업데이트한 뒤에는 권한을 다시 허용해야 할 수 있습니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("Safari는 최신 macOS에서 자동 가져오기가 막혀 있습니다(권한을 줘도 불가). "
+                     + "잘 안 되면 위 칸에 NID_AUT·NID_SES를 직접 입력하거나, Netscape 형식 cookies.txt 파일에서 가져오세요 — 이 두 가지는 권한이 필요 없습니다.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
