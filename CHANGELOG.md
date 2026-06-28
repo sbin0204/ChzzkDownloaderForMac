@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.2
+
+- Fixed Chrome/Firefox cookie import failing with a "permission to access 'T'" error: the cookie database is now snapshotted by reading its bytes (instead of a metadata-preserving file copy) and falls back to the app caches directory when the system temp folder is not writable.
+
 ## 1.3.1
 
 - Added an optional built-in capture engine that records live streams and downloads VODs natively (HLS polling, AES-128 decryption, MP4 remux) with minimal reliance on streamlink and ffmpeg. It is opt-in under Recording Settings → Experimental.

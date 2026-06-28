@@ -226,14 +226,22 @@ enum CookieImporter {
 
     /// Copies the (possibly locked) DB to a temp file, then queries via sqlite3.
     private static func queryCookies(dbPath: String, sql: String) throws -> [(String, String)] {
-        let tmp = NSTemporaryDirectory() + "ck_\(UUID().uuidString).db"
-        defer { try? FileManager.default.removeItem(atPath: tmp) }
-        do { try FileManager.default.copyItem(atPath: dbPath, toPath: tmp) }
-        catch { throw CookieImportError.readFailed(error.localizedDescription) }
+        // Snapshot the (possibly Chrome-locked) cookie DB into a private temp copy,
+        // then read that with sqlite3 — reading the live file can hit Chrome's WAL
+        // lock. We copy the bytes ourselves instead of FileManager.copyItem: copyItem
+        // also replicates the source's owner/permissions, which can fail with a
+        // permission error that names the temp folder (e.g. "…'T'에 연결할 수 있는
+        // 권한이 없기 때문에…"). A plain read + write avoids that.
+        let data: Data
+        do { data = try Data(contentsOf: URL(fileURLWithPath: dbPath)) }
+        catch { throw CookieImportError.readFailed("쿠키 DB를 읽지 못했습니다: \(error.localizedDescription)") }
+
+        let copy = try writeTemporaryCopy(data, suffix: ".db")
+        defer { try? FileManager.default.removeItem(at: copy) }
 
         let sqlite = FileManager.default.isExecutableFile(atPath: "/usr/bin/sqlite3")
             ? "/usr/bin/sqlite3" : (Tooling.locate("sqlite3") ?? "/usr/bin/sqlite3")
-        guard let out = runCommand(sqlite, [tmp, "-separator", "\u{1}", sql]) else {
+        guard let out = runCommand(sqlite, [copy.path, "-separator", "\u{1}", sql]) else {
             throw CookieImportError.readFailed("sqlite3 실행 실패")
         }
         return out.split(separator: "\n").compactMap { line in
@@ -241,6 +249,25 @@ enum CookieImporter {
             guard parts.count == 2 else { return nil }
             return (parts[0], parts[1])
         }
+    }
+
+    /// Writes `data` to a uniquely-named temp file, falling back from the system
+    /// temp dir to the app's caches directory. Some launch environments leave the
+    /// per-user temp dir (`/var/folders/.../T`) unwritable, which is what broke the
+    /// previous copyItem-into-NSTemporaryDirectory approach.
+    private static func writeTemporaryCopy(_ data: Data, suffix: String) throws -> URL {
+        let fm = FileManager.default
+        var dirs = [fm.temporaryDirectory]
+        if let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            dirs.append(caches)
+        }
+        var lastError: Error?
+        for dir in dirs {
+            let dest = dir.appendingPathComponent("ck_\(UUID().uuidString)\(suffix)")
+            do { try data.write(to: dest, options: .atomic); return dest }
+            catch { lastError = error }
+        }
+        throw CookieImportError.readFailed("임시 복사 위치에 쓸 수 없습니다: \(lastError?.localizedDescription ?? "쓰기 가능한 위치 없음")")
     }
 
     private static func runCommand(_ path: String, _ args: [String]) -> String? {
