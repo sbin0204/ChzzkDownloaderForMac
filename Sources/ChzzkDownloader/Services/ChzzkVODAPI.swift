@@ -20,6 +20,7 @@ enum VODError: LocalizedError {
     case http(Int)
     case server(code: Int, message: String)
     case downloadIncomplete
+    case decryptionFailed
 
     var errorDescription: String? {
         switch self {
@@ -28,6 +29,7 @@ enum VODError: LocalizedError {
         case .unencoded: return "아직 인코딩되지 않은 영상입니다 (.m3u8)."
         case .noManifest: return "매니페스트를 가져오지 못했습니다."
         case .http(let code): return "네트워크 오류 (HTTP \(code))."
+        case .decryptionFailed: return "암호화 세그먼트 복호화에 실패했습니다."
         case .server(let code, let message):
             if code == 9003 {
                 return "\(message) 삭제된 영상은 공식 API로 새 재생 주소를 받을 수 없습니다. (code \(code))"

@@ -7,7 +7,7 @@ extension AppModel {
     // MARK: VOD download
 
     @discardableResult
-    func addVOD(urlString: String) -> Bool {
+    func addVOD(urlString: String, autoStart: Bool = false) -> Bool {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count <= ChzzkVODAPI.maxPageURLLength else {
             cookieImportMessage = nil
@@ -32,6 +32,9 @@ extension AppModel {
                 item.variants = variants
                 item.selectedQuality = variants.last?.quality
                 item.state = .ready
+                // App Intents path: begin downloading as soon as it resolves so a
+                // "download this VOD" command actually downloads, not just queues.
+                if autoStart { self.startVOD(item) }
             } catch {
                 item.state = .failed(error.localizedDescription)
                 handleCookieAuthFailureIfNeeded(error, context: "VOD 정보 조회")
@@ -75,7 +78,7 @@ extension AppModel {
         case .fetching, .downloading:
             showToast("이미 처리 중인 VOD입니다")
             return
-        case .ready, .completed, .failed, .canceled:
+        case .ready, .paused, .completed, .failed, .canceled:
             break
         }
 
@@ -132,7 +135,11 @@ extension AppModel {
     private func startResolvedVOD(_ item: VODItem, variant: VODVariant) {
         let strategy = VODDownloader.strategy(
             variant: variant, audioOnly: item.audioOnly,
-            clipStart: item.clipStart, clipEnd: item.clipEnd)
+            clipStart: item.clipStart, clipEnd: item.clipEnd,
+            useNativeMux: config.use_native_engine)
+        // Only segment-prefetch downloads keep partial data across a pause; everything
+        // else (direct MP4, ffmpeg remote seek) would restart, so don't offer pause.
+        item.supportsPause = (strategy == .hlsSegmentPrefetch || strategy == .dashSegmentPrefetch)
         // ffmpeg is required for segment prefetch and local postprocess modes.
         if strategy != .parallel && ffmpegPath == nil {
             ensureTools(needStreamlink: false)
@@ -156,19 +163,45 @@ extension AppModel {
         runDownload(item: item, variant: variant, outURL: outURL)
     }
 
+    /// Parses a formatted speed like "5.2 MB/s" / "850 KB/s" into bytes/sec.
+    /// Returns 0 for non-rate strings (e.g. during the combine phase), which makes
+    /// the gallop animation stand still.
+    static func parseSpeedToBytesPerSec(_ text: String) -> Double {
+        guard let range = text.range(of: #"[0-9]+(\.[0-9]+)?\s*(GB|MB|KB|B)/s"#,
+                                     options: .regularExpression) else { return 0 }
+        let token = String(text[range])
+        let number = Double(token.prefix { $0.isNumber || $0 == "." }) ?? 0
+        if token.contains("GB") { return number * 1_073_741_824 }
+        if token.contains("MB") { return number * 1_048_576 }
+        if token.contains("KB") { return number * 1024 }
+        return number
+    }
+
     private func downloadModeLabel(item: VODItem, variant: VODVariant) -> String {
-        if variant.requiresRemoteHLS { return item.hasClip ? "권한 HLS 구간 ffmpeg" : "권한 HLS ffmpeg" }
-        if variant.isHLS { return item.hasClip ? "HLS 구간 세그먼트+로컬처리" : "HLS 병렬+로컬처리" }
-        if variant.hasSegmentParts { return item.hasClip ? "DASH 구간 파트+로컬처리" : "DASH 파트+로컬처리" }
+        let nativeFull = config.use_native_engine && !item.hasClip && !item.audioOnly
+        if variant.requiresRemoteHLS {
+            if nativeFull { return "권한 HLS 내장(복호화+병렬)" }
+            return item.hasClip ? "권한 HLS 구간 ffmpeg" : "권한 HLS ffmpeg"
+        }
+        if variant.isHLS {
+            if nativeFull { return "HLS 병렬+내장 mux" }
+            return item.hasClip ? "HLS 구간 세그먼트+로컬처리" : "HLS 병렬+로컬처리"
+        }
+        if variant.hasSegmentParts {
+            if nativeFull { return "DASH 파트+내장 mux" }
+            return item.hasClip ? "DASH 구간 파트+로컬처리" : "DASH 파트+로컬처리"
+        }
         if item.hasClip { return "구간 병렬 range+로컬처리" }
         if item.audioOnly { return "병렬+로컬처리" }
         return "병렬"
     }
 
     private func runDownload(item: VODItem, variant: VODVariant, outURL: URL) {
+        item.resumeVariant = variant
+        item.resumeOutURL = outURL
         item.state = .downloading
         item.percent = 0
-        item.sizeText = "다운로드 준비중…"
+        item.sizeText = "다운로드 준비 중…"
         item.speedText = ""
         item.outTime = ""
         refreshActivityAssertion()
@@ -178,12 +211,14 @@ extension AppModel {
             item: item, variant: variant, ffmpegPath: ffmpegPath ?? "",
             cookies: config.cookies, outURL: outURL, connections: vodConnections,
             audioOnly: audioOnly, rateLimit: rate,
+            useNativeMux: config.use_native_engine,
             clipStart: item.clipStart, clipEnd: item.clipEnd,
             onProgress: { [weak item] pct, size, speed, outTime in
                 Task { @MainActor in
                     guard let item else { return }
                     item.percent = pct; item.sizeText = size
                     item.speedText = speed; item.outTime = outTime
+                    item.bytesPerSecond = AppModel.parseSpeedToBytesPerSec(speed)
                 }
             },
             onFinish: { [weak self, weak item] state, path in
@@ -210,6 +245,23 @@ extension AppModel {
 
     func cancelVOD(_ item: VODItem) {
         vodDownloader.cancel(item: item)
+    }
+
+    func pauseVOD(_ item: VODItem) {
+        guard case .downloading = item.state, item.supportsPause else { return }
+        item.state = .paused
+        item.speedText = ""
+        item.bytesPerSecond = 0
+        vodDownloader.pause(item: item)
+    }
+
+    func resumeVOD(_ item: VODItem) {
+        guard case .paused = item.state else { return }
+        if let variant = item.resumeVariant, let outURL = item.resumeOutURL {
+            runDownload(item: item, variant: variant, outURL: outURL)
+        } else {
+            startVOD(item)
+        }
     }
 
     func removeVOD(_ item: VODItem) {

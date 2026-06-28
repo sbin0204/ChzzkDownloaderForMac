@@ -18,7 +18,7 @@ final class RecordingEngine {
     private struct State {
         var snapshot = Config()
         var recordingTasks: [String: RecordingTask] = [:]
-        var sessions: [String: RecordingSession] = [:]
+        var sessions: [String: RecordingBackend] = [:]
         var manualSplits: Set<String> = []   // channels with a pending "save now"
         var wakeCounters: [String: Int] = [:]
     }
@@ -106,7 +106,7 @@ final class RecordingEngine {
     /// "Save so far": finalize the current segment now and immediately continue
     /// recording into a new file. No-op when the channel isn't actively writing.
     func splitNow(channelID: String) {
-        let session = state.withValue { state -> RecordingSession? in
+        let session = state.withValue { state -> RecordingBackend? in
             guard let session = state.sessions[channelID] else { return nil }
             state.manualSplits.insert(channelID)
             return session
@@ -164,7 +164,7 @@ final class RecordingEngine {
         }
 
         // Hard-stop and clear anything that refused to finalize in time.
-        let leftovers = state.withValue { state -> [RecordingSession] in
+        let leftovers = state.withValue { state -> [RecordingBackend] in
             let remaining = Array(state.sessions.values)
             state.recordingTasks.removeAll()
             state.sessions.removeAll()
@@ -317,7 +317,14 @@ final class RecordingEngine {
     private func runSession(channel: Channel, liveInfo: LiveInfo, config: Config,
                             isContinuation: Bool) async -> Bool {
         let channelID = channel.id
-        let channelName = channel.name
+        // A quick-record (ephemeral) channel is created with the bare ID as its
+        // name, and the real nickname is filled in asynchronously — which can lose
+        // the race against the recording starting. The live-detail response that
+        // detected this broadcast already carries the nickname, so use it for the
+        // file name instead of the placeholder ID.
+        let channelName = (channel.ephemeral && !liveInfo.channelName.isEmpty)
+            ? liveInfo.channelName
+            : channel.name
 
         // Resolve output format (AV1 + ts -> mkv fallback).
         var format = config.output_format
@@ -351,23 +358,71 @@ final class RecordingEngine {
             ? UInt64(config.live_split_duration_minutes) * 60
             : 0
 
-        // Build commands.
-        let streamlinkArgs = FFmpegArgs.streamlinkArguments(
-            channelID: channelID, cookies: config.cookies, pluginDir: pluginDir,
-            threads: config.stream_segment_threads, ffmpegPath: ffmpegPath,
-            quality: channel.quality)
-        let ffmpegArgs = FFmpegArgs.ffmpegArguments(
-            config: config, format: format, outputPath: tempURL.path)
-
-        let session = RecordingSession(
-            streamlinkPath: streamlinkPath, streamlinkArgs: streamlinkArgs,
-            ffmpegPath: ffmpegPath, ffmpegArgs: ffmpegArgs)
-        state.update { $0.sessions[channelID] = session }
         let splitReason = Synchronized<String?>(nil, label: "ChzzkDownloader.RecordingEngine.split.\(channelID)")
-
         let parser = ProgressParser(channelID: channelID, channelName: channelName, startTime: now)
         parser.onUpdate = { [weak self] p in self?.onProgress?(p) }
-        let splitMonitor: Task<Void, Never>? = splitLimitBytes > 0 ? Task { [weak self, weak session] in
+
+        // Pick the capture backend. The experimental native engine (ChzzkCaptureCore)
+        // records TS/MP4 with no streamlink/ffmpeg; other formats fall back to the
+        // legacy pipeline so the comparison only swaps the part that is implemented.
+        let nativeEligible = config.use_native_engine && (format == "ts" || format == "mp4")
+        if config.use_native_engine && !nativeEligible {
+            onLog?("\(channelName): 네이티브 엔진은 TS/MP4만 지원해 ‘\(format)’은 기존 엔진으로 녹화합니다.")
+        }
+
+        var backend: RecordingBackend?
+        if nativeEligible {
+            do {
+                let native = try NativeRecordingSession(
+                    channelID: channelID, quality: channel.quality, cookies: config.cookies,
+                    tempURL: tempURL, format: format,
+                    onLog: { [weak self] line in self?.onLog?(line) })
+                state.update { $0.sessions[channelID] = native }
+                native.start()
+                backend = native
+                onLog?("\(channelName) 녹화를 시작했습니다 — 네이티브 엔진 (\(now)).")
+            } catch {
+                onLog?("\(channelName) 네이티브 엔진 시작 실패: \(error.localizedDescription) — 기존 엔진으로 전환합니다.")
+            }
+        }
+        if backend == nil {
+            let streamlinkArgs = FFmpegArgs.streamlinkArguments(
+                channelID: channelID, cookies: config.cookies, pluginDir: pluginDir,
+                threads: config.stream_segment_threads, ffmpegPath: ffmpegPath,
+                quality: channel.quality)
+            let ffmpegArgs = FFmpegArgs.ffmpegArguments(
+                config: config, format: format, outputPath: tempURL.path)
+            let session = RecordingSession(
+                streamlinkPath: streamlinkPath, streamlinkArgs: streamlinkArgs,
+                ffmpegPath: ffmpegPath, ffmpegArgs: ffmpegArgs)
+            state.update { $0.sessions[channelID] = session }
+            do {
+                try session.start(
+                    onFfmpegStderr: { line in parser.feed(line) },
+                    onStreamlinkStderr: { [weak self] line in
+                        self?.onLog?("streamlink [\(channelID)]: \(line)")
+                        if ChzzkAPI.looksLikeAuthFailure(line) {
+                            self?.onAuthFailure?("\(channelName) 라이브 녹화")
+                        }
+                    })
+                onLog?("\(channelName) 녹화를 시작했습니다 (\(now)).")
+                backend = session
+            } catch {
+                onLog?("\(channelName) 녹화 오류: \(error.localizedDescription)")
+            }
+        }
+
+        guard let backend else {
+            state.update { $0.sessions.removeValue(forKey: channelID) }
+            onProgressRemove?(channelID)
+            return false
+        }
+        onRecordingStarted?(channelName, channelID, isContinuation)
+
+        // Auto-split / tag monitors. Size split watches the file the recorder is
+        // writing (works for legacy and native-TS; native-MP4's growing TS is a
+        // sidecar, so size split there only fires once the broadcast ends — acceptable).
+        let splitMonitor: Task<Void, Never>? = splitLimitBytes > 0 ? Task { [weak self, weak backend] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 5 * 1_000_000_000)
                 if Task.isCancelled { return }
@@ -380,11 +435,11 @@ final class RecordingEngine {
                 }
                 if alreadyRequested { return }
                 self?.onLog?("\(channelName) 녹화 파일이 \(config.live_split_size_mb)MB에 도달해 새 파일로 분할합니다.")
-                session?.requestFinish()
+                backend?.requestFinish(fallbackAfter: 10)
                 return
             }
         } : nil
-        let timeSplitMonitor: Task<Void, Never>? = splitLimitSeconds > 0 ? Task { [weak self, weak session] in
+        let timeSplitMonitor: Task<Void, Never>? = splitLimitSeconds > 0 ? Task { [weak self, weak backend] in
             try? await Task.sleep(nanoseconds: splitLimitSeconds * 1_000_000_000)
             if Task.isCancelled { return }
             let alreadyRequested = splitReason.withValue { reason in
@@ -394,17 +449,17 @@ final class RecordingEngine {
             }
             if alreadyRequested { return }
             self?.onLog?("\(channelName) 녹화 시간이 \(config.live_split_duration_minutes)분에 도달해 새 파일로 분할합니다.")
-            session?.requestFinish()
+            backend?.requestFinish(fallbackAfter: 10)
         } : nil
         // Optional mid-broadcast tag watch: when the channel asks for it, finalize
         // the recording once the live's tags stop matching the filter. Config is
         // re-read every tick so toggling the option or editing tags mid-recording
         // applies without restarting the session.
-        let tagMonitor = Task { [weak self, weak session] in
+        let tagMonitor = Task { [weak self, weak backend] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)
                 if Task.isCancelled { return }
-                guard let self, let session else { return }
+                guard let self, let backend else { return }
                 let cfg = self.currentConfig()
                 guard let current = cfg.channels.first(where: { $0.id == channelID }),
                       current.stop_on_tag_mismatch, !current.tag_filter.isEmpty else { continue }
@@ -417,31 +472,18 @@ final class RecordingEngine {
                       current.shouldStopOnTagMismatch(info.tags) else { continue }
                 let tagText = info.tags.isEmpty ? "없음" : info.tags.joined(separator: ", ")
                 self.onLog?("\(channelName) 방송 태그가 더 이상 일치하지 않아 녹화를 중단합니다 (현재 태그: \(tagText)).")
-                session.requestFinish()
+                backend.requestFinish(fallbackAfter: 10)
                 return
             }
         }
 
-        do {
-            try session.start(
-                onFfmpegStderr: { line in parser.feed(line) },
-                onStreamlinkStderr: { [weak self] line in
-                    self?.onLog?("streamlink [\(channelID)]: \(line)")
-                    if ChzzkAPI.looksLikeAuthFailure(line) {
-                        self?.onAuthFailure?("\(channelName) 라이브 녹화")
-                    }
-                })
-            onLog?("\(channelName) 녹화를 시작했습니다 (\(now)).")
-            onRecordingStarted?(channelName, channelID, isContinuation)
-            await session.waitUntilExit()
-        } catch {
-            onLog?("\(channelName) 녹화 오류: \(error.localizedDescription)")
-        }
+        await backend.waitUntilExit()
+
         splitMonitor?.cancel()
         timeSplitMonitor?.cancel()
         tagMonitor.cancel()
 
-        session.terminate()
+        backend.terminate()
         state.update { $0.sessions.removeValue(forKey: channelID) }
         onProgressRemove?(channelID)
         // A split is either an automatic size/time split or a manual "save now".

@@ -49,6 +49,7 @@ enum VODState: Equatable {
     case fetching          // resolving metadata/manifest
     case ready             // metadata loaded, awaiting download
     case downloading
+    case paused            // download stopped, partial kept (resumable)
     case completed
     case failed(String)
     case canceled
@@ -57,7 +58,7 @@ enum VODState: Equatable {
         switch self {
         case .downloading:
             return false
-        case .fetching, .ready, .completed, .failed, .canceled:
+        case .fetching, .ready, .paused, .completed, .failed, .canceled:
             return true
         }
     }
@@ -78,6 +79,13 @@ final class VODItem: Identifiable {
     var clipStart: Double?             // segment start (seconds); nil = whole video
     var clipEnd: Double?               // segment end (seconds)
     var state: VODState = .fetching
+    var resumeVariant: VODVariant?     // remembered for pause → resume
+    var resumeOutURL: URL?
+    /// True only while a download whose strategy genuinely supports pause/resume is
+    /// active (HLS/DASH segment prefetch — already-fetched segments are kept). Direct
+    /// MP4 and ffmpeg-based downloads can't pause without losing progress, so the UI
+    /// hides their pause button.
+    var supportsPause: Bool = false
 
     var hasClip: Bool {
         if let s = clipStart, let e = clipEnd, e > s { return true }
@@ -88,6 +96,7 @@ final class VODItem: Identifiable {
     var percent: Double = 0
     var sizeText: String = "N/A"
     var speedText: String = "N/A"
+    var bytesPerSecond: Double = 0   // numeric speed, drives the gallop animation
     var outTime: String = "00:00:00"
     var outputPath: String?
 

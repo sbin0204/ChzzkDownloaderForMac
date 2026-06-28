@@ -292,6 +292,14 @@ struct Config: Codable, Hashable {
     /// Channels that were being monitored/recorded when the app last quit,
     /// so monitoring resumes automatically on the next launch.
     var armed_channels: [String] = []
+    /// Experimental: record live with the built-in native engine (ChzzkCaptureCore)
+    /// instead of streamlink+ffmpeg. Only TS/MP4 use it; other formats fall back to
+    /// the legacy pipeline. Off by default. Lets the two engines be compared.
+    var use_native_engine: Bool = false
+    /// Show the Muybridge galloping-horse animation during VOD downloads, paced by
+    /// the download speed (homage to "The Horse in Motion", 1878). Off by default;
+    /// users opt in from the VOD download options.
+    var show_download_horse: Bool = false
 
     init() {}
 
@@ -362,7 +370,7 @@ extension Config {
         case hevc_settings, av1_settings, log_enabled, cookies, auto_import_cookies_on_launch, proxy
         case notify_on_complete, schedules, live_split_size_mb, live_split_duration_minutes
         case cyclic_recording_enabled, cyclic_max_files, cyclic_max_size_gb, notify_webhook_url
-        case ffmpeg_path, streamlink_path, armed_channels
+        case ffmpeg_path, streamlink_path, armed_channels, use_native_engine, show_download_horse
     }
 
     /// Lenient decoding: any missing key keeps its default, so loading a
@@ -393,5 +401,7 @@ extension Config {
         if let v = try c.decodeIfPresent(String.self, forKey: .ffmpeg_path) { ffmpeg_path = v }
         if let v = try c.decodeIfPresent(String.self, forKey: .streamlink_path) { streamlink_path = v }
         if let v = try c.decodeIfPresent([String].self, forKey: .armed_channels) { armed_channels = v }
+        if let v = try c.decodeIfPresent(Bool.self, forKey: .use_native_engine) { use_native_engine = v }
+        if let v = try c.decodeIfPresent(Bool.self, forKey: .show_download_horse) { show_download_horse = v }
     }
 }

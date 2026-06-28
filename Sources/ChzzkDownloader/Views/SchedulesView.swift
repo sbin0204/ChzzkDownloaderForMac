@@ -31,13 +31,19 @@ struct SchedulesView: View {
                         description: Text("툴바의 +, 또는 ⌘N으로 채널을 지정한 시각에 자동 녹화하도록 예약하세요."))
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    List {
-                        ForEach(schedules) { ScheduleRow(schedule: $0) }
+                    FadingScrollView {
+                        VStack(spacing: 0) {
+                            ForEach(Array(schedules.enumerated()), id: \.element.id) { idx, schedule in
+                                if idx > 0 { Divider() }
+                                ScheduleRow(schedule: schedule)
+                                    .hoverHighlight(cornerRadius: 6)
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 4)
+                        .cardSurface()
+                        .animation(.default, value: schedules.map(\.id))
                     }
-                    .listStyle(.inset(alternatesRowBackgrounds: true))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5))
                 }
             }
         }

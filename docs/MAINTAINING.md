@@ -52,3 +52,23 @@ appcast + changelog page on gh-pages) in one command. It runs
 ```sh
 GHTOKEN=<github personal access token> ./scripts/release.sh
 ```
+
+## App Intents (Siri / Spotlight / Shortcuts)
+
+The app defines App Intents (`Sources/ChzzkDownloader/Intents/`) so recording can
+be driven by Siri, Spotlight, and the Shortcuts app. They are **discovered and
+executed only when the app is signed with a real identity** — the App Intents XPC
+handshake refuses an ad-hoc signature. The default build is ad-hoc, so:
+
+- Ad-hoc build: the intent code ships in the binary but the discovery metadata is
+  *not* embedded (otherwise the actions would appear and then fail).
+- Real-identity build: pass `CODESIGN_IDENTITY` and `build_app.sh` embeds the
+  `Metadata.appintents` bundle and signs with that identity, activating Siri /
+  Spotlight / Shortcuts:
+
+```sh
+CODESIGN_IDENTITY="Apple Development: you@example.com (TEAMID)" ./build_app.sh
+```
+
+Distribution would additionally need Developer ID signing + notarization, which
+this project does not use.

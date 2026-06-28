@@ -1,4 +1,5 @@
 import Foundation
+import ChzzkCaptureCore
 
 /// Downloads a resolved VOD variant to `outURL`.
 /// - Direct MP4 (whole video): multi-connection ranged download.
@@ -13,6 +14,8 @@ final class VODDownloader {
         var parallel: [UUID: ParallelDownloader] = [:]
         var hlsDownloads: [UUID: HLSParallelDownloader] = [:]
         var dashDownloads: [UUID: DASHSegmentDownloader] = [:]
+        var nativeMux: [UUID: Task<Void, Never>] = [:]
+        var paused: Set<UUID> = []
     }
 
     enum DownloadStrategy: Equatable {
@@ -27,10 +30,18 @@ final class VODDownloader {
     private let state = Synchronized(State(), label: "ChzzkDownloader.VODDownloader.state")
 
     static func strategy(variant: VODVariant, audioOnly: Bool,
-                         clipStart: Double?, clipEnd: Double?) -> DownloadStrategy {
-        if variant.requiresRemoteHLS { return .remoteFFmpegSeek }
-        if variant.isHLS { return .hlsSegmentPrefetch }
+                         clipStart: Double?, clipEnd: Double?,
+                         useNativeMux: Bool = false) -> DownloadStrategy {
         let hasClip = clipStart != nil && clipEnd != nil && (clipEnd ?? 0) > (clipStart ?? 0)
+        if variant.requiresRemoteHLS {
+            // The native engine decrypts AES-128 HLS itself, so a full (non-clip,
+            // non-audio) membership VOD can be received + muxed with no ffmpeg.
+            // Clips/audio-only keep ffmpeg's HTTP seek. A native failure falls back
+            // to ffmpeg remote seek (wired in startHLSParallelPostprocess).
+            if useNativeMux && !hasClip && !audioOnly { return .hlsSegmentPrefetch }
+            return .remoteFFmpegSeek
+        }
+        if variant.isHLS { return .hlsSegmentPrefetch }
         // Do not move segmented DASH clips back to "download from 0 then cut".
         // If the manifest gives us parts, partial downloads must fetch only the
         // overlapping segments. See docs/VOD_PARTIAL_DOWNLOAD_POLICY.md.
@@ -281,6 +292,7 @@ final class VODDownloader {
     func start(item: VODItem, variant: VODVariant, ffmpegPath: String,
                cookies: Cookies, outURL: URL, connections: Int,
                audioOnly: Bool = false, rateLimit: Double = 0,
+               useNativeMux: Bool = false,
                clipStart: Double? = nil, clipEnd: Double? = nil,
                onProgress: @escaping (Double, String, String, String) -> Void,
                onFinish: @escaping (VODState, String?) -> Void) {
@@ -311,22 +323,34 @@ final class VODDownloader {
             clipDuration = nil
         }
 
-        switch Self.strategy(variant: variant, audioOnly: audioOnly, clipStart: clipStart, clipEnd: clipEnd) {
+        switch Self.strategy(variant: variant, audioOnly: audioOnly, clipStart: clipStart,
+                             clipEnd: clipEnd, useNativeMux: useNativeMux) {
         case .dashSegmentPrefetch:
             let postDuration = clipDuration ?? Double(item.durationSeconds)
             startDASHSegmentPostprocess(item: item, variant: variant, ffmpegPath: ffmpegPath,
                                         cookies: cookies, connections: connections,
                                         rateLimit: rateLimit, outURL: outURL,
-                                        audioOnly: audioOnly, clipStart: clipStart,
+                                        audioOnly: audioOnly, useNativeMux: useNativeMux,
+                                        clipStart: clipStart,
                                         clipDuration: clipDuration, progressDuration: postDuration,
                                         onProgress: onProgress, onFinish: onFinish)
         case .hlsSegmentPrefetch:
             let postDuration = clipDuration ?? Double(item.durationSeconds)
+            // For a rerouted AES (membership) HLS, if the native decrypt/download
+            // fails, fall back to ffmpeg remote seek so the download is never lost.
+            let downloadFallback: (() -> Void)? = variant.requiresRemoteHLS ? { [weak self] in
+                self?.startFFmpeg(item: item, variant: variant, ffmpegPath: ffmpegPath,
+                                  cookies: cookies, duration: postDuration, outURL: outURL,
+                                  audioOnly: audioOnly, clipStart: clipStart, clipDuration: clipDuration,
+                                  onProgress: onProgress, onFinish: onFinish)
+            } : nil
             startHLSParallelPostprocess(item: item, variant: variant, ffmpegPath: ffmpegPath,
                                         cookies: cookies, connections: connections,
                                         rateLimit: rateLimit, outURL: outURL,
-                                        audioOnly: audioOnly, clipStart: clipStart,
+                                        audioOnly: audioOnly, useNativeMux: useNativeMux,
+                                        clipStart: clipStart,
                                         clipDuration: clipDuration, progressDuration: postDuration,
+                                        downloadFallback: downloadFallback,
                                         onProgress: onProgress, onFinish: onFinish)
         case .remoteFFmpegSeek:
             let progressDuration = clipDuration ?? Double(item.durationSeconds)
@@ -357,21 +381,38 @@ final class VODDownloader {
     }
 
     func cancel(item: VODItem) {
-        let (proc, par, hls, dash) = state.withValue { state in
+        let (proc, par, hls, dash, nat) = state.withValue { state in
+            state.paused.remove(item.id)
             let proc = state.processes.removeValue(forKey: item.id)
-            return (proc, state.parallel[item.id], state.hlsDownloads[item.id], state.dashDownloads[item.id])
+            return (proc, state.parallel[item.id], state.hlsDownloads[item.id],
+                    state.dashDownloads[item.id], state.nativeMux[item.id])
         }
         proc?.terminate()
         par?.cancel()
         hls?.cancel()
         dash?.cancel()
+        nat?.cancel()
+    }
+
+    /// Pause an in-progress download, keeping partial data. Segment (HLS/DASH)
+    /// downloads resume from where they left off; a direct-MP4 download restarts.
+    /// Only meaningful during the network phase (the UI hides pause during muxing).
+    func pause(item: VODItem) {
+        let (hls, dash, par) = state.withValue { state -> (HLSParallelDownloader?, DASHSegmentDownloader?, ParallelDownloader?) in
+            state.paused.insert(item.id)
+            return (state.hlsDownloads[item.id], state.dashDownloads[item.id], state.parallel[item.id])
+        }
+        hls?.pauseStop()
+        dash?.pauseStop()
+        par?.cancel()
     }
 
     // MARK: parallel ranged download (direct MP4)
 
     private func startDASHSegmentPostprocess(item: VODItem, variant: VODVariant, ffmpegPath: String,
                                              cookies: Cookies, connections: Int, rateLimit: Double,
-                                             outURL: URL, audioOnly: Bool, clipStart: Double?,
+                                             outURL: URL, audioOnly: Bool, useNativeMux: Bool,
+                                             clipStart: Double?,
                                              clipDuration: Double?, progressDuration: Double,
                                              onProgress: @escaping (Double, String, String, String) -> Void,
                                              onFinish: @escaping (VODState, String?) -> Void) {
@@ -383,7 +424,7 @@ final class VODDownloader {
         let downloader = DASHSegmentDownloader()
         state.update { $0.dashDownloads[item.id] = downloader }
         let headers = VODRequestHeaders.media(cookies: cookies)
-        onProgress(0, "DASH 파트 목록 확인중…", "", "")
+        onProgress(0, "다운로드 준비 중… (목록 확인)", "", "")
 
         Task {
             do {
@@ -396,20 +437,39 @@ final class VODDownloader {
                     let networkPct = totalSegments > 0 ? min(1.0, Double(doneSegments) / Double(totalSegments)) : 0
                     let pct = min(0.92, networkPct * 0.92)
                     let size = doneSegments == 0
-                        ? "DASH 파트 수신 대기중…"
-                        : "\(doneSegments)/\(totalSegments) 파트 · \(ProgressParser.formatSize(Double(bytes)))"
+                        ? "동영상 받는 중… (파트 준비)"
+                        : "동영상 받는 중 · \(doneSegments)/\(totalSegments) 파트 · \(ProgressParser.formatSize(Double(bytes)))"
                     let speed = doneSegments == 0 ? "" : ProgressParser.formatSize(bps) + "/s"
                     onProgress(pct, size, speed, "")
                 }
                 state.update { $0.dashDownloads.removeValue(forKey: item.id) }
-                startLocalPostprocess(item: item, ffmpegPath: ffmpegPath, sourceURL: local.sourceURL,
-                                      outURL: outURL, audioOnly: audioOnly,
-                                      clipStart: local.localClipStart, clipDuration: clipDuration,
-                                      progressDuration: progressDuration, cleanupURL: local.workDir,
-                                      onProgress: onProgress, onFinish: onFinish)
+                func runFFmpegPostprocess() {
+                    self.startLocalPostprocess(item: item, ffmpegPath: ffmpegPath, sourceURL: local.sourceURL,
+                                          outURL: outURL, audioOnly: audioOnly,
+                                          clipStart: local.localClipStart, clipDuration: clipDuration,
+                                          progressDuration: progressDuration, cleanupURL: local.workDir,
+                                          onProgress: onProgress, onFinish: onFinish)
+                }
+                // Full (non-clip, non-audio) DASH download is a container remux too:
+                // native, no ffmpeg. Clips/audio-only — or any native failure — use ffmpeg.
+                if useNativeMux, !audioOnly, clipStart == nil {
+                    self.startNativeMux(item: item, sourceURL: local.sourceURL, outURL: outURL,
+                                        cleanupURL: local.workDir,
+                                        onProgress: onProgress, onFinish: onFinish,
+                                        fallback: runFFmpegPostprocess)
+                } else {
+                    runFFmpegPostprocess()
+                }
             } catch is CancellationError {
+                let paused = state.withValue { state -> Bool in
+                    state.dashDownloads.removeValue(forKey: item.id)
+                    return state.paused.remove(item.id) != nil
+                }
+                if paused {
+                    onFinish(.paused, nil)        // keep the work dir for resume
+                    return
+                }
                 downloader.cleanup()
-                state.update { $0.dashDownloads.removeValue(forKey: item.id) }
                 onFinish(.canceled, nil)
             } catch {
                 downloader.cleanup()
@@ -421,14 +481,16 @@ final class VODDownloader {
 
     private func startHLSParallelPostprocess(item: VODItem, variant: VODVariant, ffmpegPath: String,
                                              cookies: Cookies, connections: Int, rateLimit: Double,
-                                             outURL: URL, audioOnly: Bool, clipStart: Double?,
+                                             outURL: URL, audioOnly: Bool, useNativeMux: Bool,
+                                             clipStart: Double?,
                                              clipDuration: Double?, progressDuration: Double,
+                                             downloadFallback: (() -> Void)? = nil,
                                              onProgress: @escaping (Double, String, String, String) -> Void,
                                              onFinish: @escaping (VODState, String?) -> Void) {
         let downloader = HLSParallelDownloader()
         state.update { $0.hlsDownloads[item.id] = downloader }
         let headers = VODRequestHeaders.media(cookies: cookies)
-        onProgress(0, "HLS 세그먼트 목록 확인중…", "", "")
+        onProgress(0, "다운로드 준비 중… (목록 확인)", "", "")
 
         Task {
             do {
@@ -441,25 +503,49 @@ final class VODDownloader {
                     let networkPct = totalSegments > 0 ? min(1.0, Double(doneSegments) / Double(totalSegments)) : 0
                     let pct = min(0.92, networkPct * 0.92)
                     let size = doneSegments == 0
-                        ? "HLS 세그먼트 수신 대기중…"
-                        : "\(doneSegments)/\(totalSegments) 조각 · \(ProgressParser.formatSize(Double(bytes)))"
+                        ? "동영상 받는 중… (세그먼트 준비)"
+                        : "동영상 받는 중 · \(doneSegments)/\(totalSegments) 조각 · \(ProgressParser.formatSize(Double(bytes)))"
                     let speed = doneSegments == 0 ? "" : ProgressParser.formatSize(bps) + "/s"
                     onProgress(pct, size, speed, "")
                 }
                 state.update { $0.hlsDownloads.removeValue(forKey: item.id) }
-                startLocalPostprocess(item: item, ffmpegPath: ffmpegPath, sourceURL: local.sourceURL,
-                                      outURL: outURL, audioOnly: audioOnly,
-                                      clipStart: local.localClipStart, clipDuration: clipDuration,
-                                      progressDuration: progressDuration, cleanupURL: local.workDir,
-                                      onProgress: onProgress, onFinish: onFinish)
+                func runFFmpegPostprocess() {
+                    self.startLocalPostprocess(item: item, ffmpegPath: ffmpegPath, sourceURL: local.sourceURL,
+                                          outURL: outURL, audioOnly: audioOnly,
+                                          clipStart: local.localClipStart, clipDuration: clipDuration,
+                                          progressDuration: progressDuration, cleanupURL: local.workDir,
+                                          onProgress: onProgress, onFinish: onFinish)
+                }
+                // A full (non-clip, non-audio) download is just a container remux,
+                // so do it natively with no ffmpeg. Clips/audio-only — or any native
+                // failure — fall back to the ffmpeg postprocess on the same source.
+                if useNativeMux, !audioOnly, clipStart == nil {
+                    self.startNativeMux(item: item, sourceURL: local.sourceURL, outURL: outURL,
+                                        cleanupURL: local.workDir,
+                                        onProgress: onProgress, onFinish: onFinish,
+                                        fallback: runFFmpegPostprocess)
+                } else {
+                    runFFmpegPostprocess()
+                }
             } catch is CancellationError {
-                downloader.cleanup()
-                state.update { $0.hlsDownloads.removeValue(forKey: item.id) }
-                onFinish(.canceled, nil)
+                let paused = state.withValue { state -> Bool in
+                    state.hlsDownloads.removeValue(forKey: item.id)
+                    return state.paused.remove(item.id) != nil
+                }
+                if paused {
+                    onFinish(.paused, nil)        // keep the work dir for resume
+                } else {
+                    downloader.cleanup()
+                    onFinish(.canceled, nil)
+                }
             } catch {
                 downloader.cleanup()
                 state.update { $0.hlsDownloads.removeValue(forKey: item.id) }
-                onFinish(.failed(error.localizedDescription), nil)
+                if let downloadFallback {
+                    downloadFallback()   // native AES download failed → ffmpeg remote seek
+                } else {
+                    onFinish(.failed(error.localizedDescription), nil)
+                }
             }
         }
     }
@@ -476,7 +562,7 @@ final class VODDownloader {
         try? FileManager.default.removeItem(at: sourceURL)
         Filename.removeTemporary(for: sourceURL, suffix: ".part")
         Filename.removeTemporary(for: sourceURL, suffix: ".cvdresume")
-        onProgress(0, audioOnly ? "오디오 추출용 원본 확인중…" : "서버 Range 확인중…", "", "")
+        onProgress(0, audioOnly ? "오디오 준비 중… (원본 확인)" : "다운로드 준비 중…", "", "")
 
         let downloader = ParallelDownloader()
         state.update { $0.parallel[item.id] = downloader }
@@ -490,8 +576,8 @@ final class VODDownloader {
                         let networkPct = total > 0 ? min(1.0, Double(done) / Double(total)) : 0
                         let pct = min(0.92, networkPct * 0.92)
                         let size = done == 0
-                            ? "데이터 수신 대기중…"
-                            : "\(ProgressParser.formatSize(Double(done))) / \(ProgressParser.formatSize(Double(total)))"
+                            ? "동영상 받는 중…"
+                            : "동영상 받는 중 · \(ProgressParser.formatSize(Double(done))) / \(ProgressParser.formatSize(Double(total)))"
                         let speed = done == 0 ? "" : ProgressParser.formatSize(bps) + "/s"
                         onProgress(pct, size, speed, "")
                     }
@@ -502,10 +588,13 @@ final class VODDownloader {
                                       progressDuration: progressDuration, cleanupURL: sourceURL,
                                       onProgress: onProgress, onFinish: onFinish)
             } catch is CancellationError {
-                state.update { $0.parallel.removeValue(forKey: item.id) }
+                let paused = state.withValue { state -> Bool in
+                    state.parallel.removeValue(forKey: item.id)
+                    return state.paused.remove(item.id) != nil
+                }
                 try? FileManager.default.removeItem(at: sourceURL)
                 Filename.removeTemporary(for: sourceURL, suffix: ".part")
-                onFinish(.canceled, nil)
+                onFinish(paused ? .paused : .canceled, nil)
             } catch {
                 state.update { $0.parallel.removeValue(forKey: item.id) }
                 try? FileManager.default.removeItem(at: sourceURL)
@@ -532,7 +621,7 @@ final class VODDownloader {
         let headers = VODRequestHeaders.media(cookies: cookies)
         let sourceURL = Filename.temporaryURL(for: outURL, suffix: ".clip-source.mp4")
         try? FileManager.default.removeItem(at: sourceURL)
-        onProgress(0, "구간 Range 확인중…", "", "")
+        onProgress(0, "구간 다운로드 준비 중…", "", "")
 
         let downloader = ParallelDownloader()
         state.update { $0.parallel[item.id] = downloader }
@@ -556,8 +645,8 @@ final class VODDownloader {
                     let networkPct = total > 0 ? min(1.0, Double(done) / Double(total)) : 0
                     let pct = min(0.92, networkPct * 0.92)
                     let size = done == 0
-                        ? "구간 데이터 수신 대기중…"
-                        : "\(ProgressParser.formatSize(Double(done))) / \(ProgressParser.formatSize(Double(total)))"
+                        ? "구간 받는 중…"
+                        : "구간 받는 중 · \(ProgressParser.formatSize(Double(done))) / \(ProgressParser.formatSize(Double(total)))"
                     let speed = done == 0 ? "" : ProgressParser.formatSize(bps) + "/s"
                     onProgress(pct, size, speed, "")
                 }
@@ -570,9 +659,12 @@ final class VODDownloader {
                                       onProgress: onProgress, onFinish: onFinish,
                                       onFailureFallback: fallbackToRemoteSeek)
             } catch is CancellationError {
-                state.update { $0.parallel.removeValue(forKey: item.id) }
+                let paused = state.withValue { state -> Bool in
+                    state.parallel.removeValue(forKey: item.id)
+                    return state.paused.remove(item.id) != nil
+                }
                 try? FileManager.default.removeItem(at: sourceURL)
-                onFinish(.canceled, nil)
+                onFinish(paused ? .paused : .canceled, nil)
             } catch {
                 state.update { $0.parallel.removeValue(forKey: item.id) }
                 try? FileManager.default.removeItem(at: sourceURL)
@@ -589,7 +681,7 @@ final class VODDownloader {
         state.update { $0.parallel[item.id] = downloader }
 
         let headers = VODRequestHeaders.media(cookies: cookies)
-        onProgress(0, "서버 Range 확인중…", "", "")
+        onProgress(0, "다운로드 준비 중…", "", "")
 
         Task {
             do {
@@ -598,24 +690,64 @@ final class VODDownloader {
                     connections: connections, rateLimitBytesPerSec: rateLimit) { done, total, bps in
                         let pct = total > 0 ? min(1.0, Double(done) / Double(total)) : 0
                         let size = done == 0
-                            ? "데이터 수신 대기중…"
-                            : "\(ProgressParser.formatSize(Double(done))) / \(ProgressParser.formatSize(Double(total)))"
+                            ? "동영상 받는 중…"
+                            : "동영상 받는 중 · \(ProgressParser.formatSize(Double(done))) / \(ProgressParser.formatSize(Double(total)))"
                         let speed = done == 0 ? "" : ProgressParser.formatSize(bps) + "/s"
                         onProgress(pct, size, speed, "")
                     }
                 state.update { $0.parallel.removeValue(forKey: item.id) }
                 onFinish(.completed, outURL.path)
             } catch is CancellationError {
-                // Explicit cancel: discard partial data.
-                state.update { $0.parallel.removeValue(forKey: item.id) }
+                // Direct MP4 has no resume; discard the partial either way.
+                let paused = state.withValue { state -> Bool in
+                    state.parallel.removeValue(forKey: item.id)
+                    return state.paused.remove(item.id) != nil
+                }
                 Filename.removeTemporary(for: outURL, suffix: ".part")
-                onFinish(.canceled, nil)
+                onFinish(paused ? .paused : .canceled, nil)
             } catch {
                 state.update { $0.parallel.removeValue(forKey: item.id) }
                 Filename.removeTemporary(for: outURL, suffix: ".part")
                 onFinish(.failed(error.localizedDescription), nil)
             }
         }
+    }
+
+    // MARK: native mux (no ffmpeg)
+
+    /// Container-only remux (TS/fMP4 → MP4) via ChzzkCaptureCore's MP4Remuxer — no
+    /// ffmpeg, no re-encode. Used for full HLS-VOD downloads. On any failure it runs
+    /// `fallback` (the ffmpeg postprocess) on the same downloaded source, so a native
+    /// problem never loses the download.
+    private func startNativeMux(item: VODItem, sourceURL: URL, outURL: URL, cleanupURL: URL?,
+                                onProgress: @escaping (Double, String, String, String) -> Void,
+                                onFinish: @escaping (VODState, String?) -> Void,
+                                fallback: @escaping () -> Void) {
+        let partURL = Filename.temporaryURL(for: outURL, suffix: ".native.part")
+        try? FileManager.default.removeItem(at: partURL)
+        onProgress(0.94, "동영상 합치는 중…", "내장 엔진", "")
+
+        let task = Task {
+            do {
+                try await MP4Remuxer.remux(source: sourceURL, to: partURL)
+                if Task.isCancelled { throw CancellationError() }
+                try? FileManager.default.removeItem(at: outURL)
+                try FileManager.default.moveItem(at: partURL, to: outURL)
+                if let cleanupURL { try? FileManager.default.removeItem(at: cleanupURL) }
+                self.state.update { $0.nativeMux.removeValue(forKey: item.id) }
+                onFinish(.completed, outURL.path)
+            } catch is CancellationError {
+                try? FileManager.default.removeItem(at: partURL)
+                self.state.update { $0.nativeMux.removeValue(forKey: item.id) }
+                onFinish(.canceled, nil)
+            } catch {
+                // Native remux failed — keep the downloaded source, let ffmpeg finish.
+                try? FileManager.default.removeItem(at: partURL)
+                self.state.update { $0.nativeMux.removeValue(forKey: item.id) }
+                fallback()
+            }
+        }
+        state.update { $0.nativeMux[item.id] = task }
     }
 
     // MARK: ffmpeg (HLS live-rewind)
@@ -699,8 +831,11 @@ final class VODDownloader {
                     let speed = transcodeAudio
                         ? Self.formattedFFmpegSpeed(summary["speed"], fallback: "AAC 변환")
                         : Self.formattedFFmpegSpeed(summary["speed"], fallback: "로컬 처리")
-                    onProgress(0.92 + postPct * 0.08,
-                               ProgressParser.formatSize(Double(size)), speed, outTime)
+                    // Describe the phase so a paused percent does not look frozen.
+                    let phase = transcodeAudio ? "오디오 코덱 변환 중…"
+                        : (audioOnly ? "오디오 추출 중…" : "동영상 합치는 중…")
+                    let progressLabel = size > 0 ? "\(phase) \(ProgressParser.formatSize(Double(size)))" : phase
+                    onProgress(0.92 + postPct * 0.08, progressLabel, speed, outTime)
                 }
             }
 
@@ -765,6 +900,9 @@ final class VODDownloader {
             }
         }
 
+        // Show the combine phase immediately — the percent sits still between the
+        // last segment and the first ffmpeg progress tick, which looks like a freeze.
+        onProgress(0.92, audioOnly ? "오디오 추출 중…" : "동영상 합치는 중…", "", "")
         runFFmpegPostprocess(transcodeAudio: false)
     }
 
@@ -785,7 +923,7 @@ final class VODDownloader {
             : Self.remoteFFmpegArguments(
                 variantURL: variant.url, cookies: cookies, outURL: outURL, partURL: partURL,
                 audioOnly: audioOnly, clipStart: clipStart, clipDuration: clipDuration)
-        onProgress(0, clipStart != nil ? "ffmpeg 구간 요청 준비중…" : "ffmpeg 요청 준비중…", "", "")
+        onProgress(0, clipStart != nil ? "구간 다운로드 준비 중…" : "다운로드 준비 중…", "", "")
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: ffmpegPath)
@@ -820,7 +958,8 @@ final class VODDownloader {
                 let speed = byteRate.isEmpty
                     ? (processingSpeed.isEmpty ? "N/A" : processingSpeed)
                     : (processingSpeed.isEmpty ? byteRate : "\(byteRate) (\(processingSpeed))")
-                onProgress(pct, ProgressParser.formatSize(Double(size)),
+                let label = clipStart != nil ? "구간 받는 중" : "동영상 받는 중"
+                onProgress(pct, size > 0 ? "\(label) · \(ProgressParser.formatSize(Double(size)))" : "\(label)…",
                            speed, outTime)
             }
         }

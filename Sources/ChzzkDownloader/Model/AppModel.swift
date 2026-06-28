@@ -48,6 +48,11 @@ struct ToolAlert: Identifiable {
 @MainActor
 @Observable
 final class AppModel {
+    /// The running model, so App Intents (Siri / Shortcuts / Spotlight) can drive
+    /// recording on the live instance. Set in init; weak so it never keeps the
+    /// app alive on its own.
+    static weak var shared: AppModel?
+
     var config: Config {
         didSet {
             ProxySupport.current = config.proxy
@@ -255,6 +260,7 @@ final class AppModel {
             }
         }
         configureEngineTooling()
+        Self.shared = self
         showWelcome = !UserDefaults.standard.bool(forKey: Self.didShowWelcomeKey)
         Notifier.requestAuthorizationIfNeeded()
         checkCookieRefreshReminder()
@@ -360,6 +366,7 @@ final class AppModel {
     static func isWorkingVOD(_ item: VODItem) -> Bool {
         if case .fetching = item.state { return true }
         if case .downloading = item.state { return true }
+        if case .paused = item.state { return true }
         return false
     }
 

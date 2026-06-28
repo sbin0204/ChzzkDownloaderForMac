@@ -40,19 +40,23 @@ struct ChannelsView: View {
                         description: Text("툴바의 +, 또는 ⌘N으로 치지직 채널을 추가하세요."))
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    List {
-                        ForEach(filtered) { ch in
-                            ChannelRow(channel: ch, onEdit: { sheet = .edit(ch) })
-                                .contextMenu {
-                                    Button("편집") { sheet = .edit(ch) }
-                                    Button("삭제", role: .destructive) { deleteTarget = ch }
-                                }
+                    FadingScrollView {
+                        VStack(spacing: 0) {
+                            ForEach(Array(filtered.enumerated()), id: \.element.id) { idx, ch in
+                                if idx > 0 { Divider() }
+                                ChannelRow(channel: ch, onEdit: { sheet = .edit(ch) })
+                                    .hoverHighlight(cornerRadius: 6)
+                                    .contextMenu {
+                                        Button("편집") { sheet = .edit(ch) }
+                                        Button("삭제", role: .destructive) { deleteTarget = ch }
+                                    }
+                            }
                         }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 4)
+                        .cardSurface()
+                        .animation(.default, value: filtered.map(\.id))
                     }
-                    .listStyle(.inset(alternatesRowBackgrounds: true))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5))
                 }
             }
         }

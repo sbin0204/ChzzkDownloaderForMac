@@ -143,8 +143,21 @@ done
 
 /usr/bin/plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
-# Ad-hoc sign so the app runs locally without Gatekeeper complaints.
-codesign --force --deep --sign - "$APP"
+# Code signing identity. Defaults to ad-hoc ("-"); set CODESIGN_IDENTITY to a
+# real identity (e.g. "Developer ID Application: …" or a personal team) to make
+# App Intents executable.
+CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
+
+# App Intents (Siri / Spotlight / Shortcuts) only *execute* when the app is signed
+# with a real identity — the XPC handshake refuses an ad-hoc signature. So embed
+# the discovery metadata only for a real-identity build; otherwise the actions
+# would appear and then fail with "couldn't communicate with the app". The intent
+# code stays in the binary either way, ready to activate once properly signed.
+if [ "$CODESIGN_IDENTITY" != "-" ]; then
+  ./scripts/generate_appintents_metadata.sh "$APP" "$BIN_DIR" "$BIN_NAME" "$MIN_MACOS"
+fi
+
+codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP"
 codesign --verify --deep --strict "$APP"
 
 echo "Done: $(pwd)/${APP}"

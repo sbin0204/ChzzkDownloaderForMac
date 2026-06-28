@@ -1,4 +1,5 @@
 import Foundation
+import ChzzkCaptureCore
 
 /// Shared result of the DASH/HLS segment prefetch downloaders: a local,
 /// concatenated media file ready for ffmpeg postprocess.
@@ -38,6 +39,12 @@ final class DASHSegmentDownloader {
         if let dir { try? FileManager.default.removeItem(at: dir) }
     }
 
+    /// Stop without deleting the work dir, so the already-downloaded segments
+    /// survive for a later resume.
+    func pauseStop() {
+        state.update { $0.canceled = true }
+    }
+
     private var isCanceled: Bool {
         state.withValue { $0.canceled }
     }
@@ -49,7 +56,8 @@ final class DASHSegmentDownloader {
                   onProgress: @escaping (Int, Int, Int, Double) -> Void) async throws -> SegmentLocalSource {
         let fm = FileManager.default
         let dir = Filename.temporaryURL(for: finalOutput, suffix: ".dash-\(workID.uuidString)")
-        try? fm.removeItem(at: dir)
+        // Reuse an existing work dir (resume) instead of wiping it; already-fetched
+        // segments are skipped below. A fresh cancel/retry removes the dir elsewhere.
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         state.update { $0.workDir = dir }
 
@@ -114,10 +122,15 @@ final class DASHSegmentDownloader {
                 group.addTask { [weak self] in
                     guard let self else { return }
                     if self.isCanceled { throw CancellationError() }
+                    // Resume: a segment already on disk (atomic write = complete) is skipped.
+                    if let sz = (try? FileManager.default.attributesOfItem(atPath: asset.local.path)[.size]) as? Int, sz > 0 {
+                        report(addedBytes: sz, logicalSegment: asset.logicalSegment)
+                        return
+                    }
                     let data = try await self.fetchData(url: asset.remote, headers: headers, session: session)
                     await limiter.consume(data.count)
                     if self.isCanceled { throw CancellationError() }
-                    try data.write(to: asset.local)
+                    try data.write(to: asset.local, options: .atomic)
                     report(addedBytes: data.count, logicalSegment: asset.logicalSegment)
                 }
                 return true
@@ -214,6 +227,13 @@ final class HLSParallelDownloader {
         let remote: URL
         let local: URL
         let logicalSegment: Bool
+        var sequence: Int = 0   // media sequence number, for AES-128 IV derivation
+    }
+
+    /// AES-128 key material for an encrypted (membership) HLS VOD.
+    private struct AESKey {
+        let key: Data
+        let explicitIV: Data?
     }
 
     private let state = Synchronized(State(), label: "ChzzkDownloader.HLSParallelDownloader.state")
@@ -224,6 +244,11 @@ final class HLSParallelDownloader {
             return state.workDir
         }
         if let dir { try? FileManager.default.removeItem(at: dir) }
+    }
+
+    /// Stop without deleting the work dir so already-fetched segments survive a resume.
+    func pauseStop() {
+        state.update { $0.canceled = true }
     }
 
     private var isCanceled: Bool {
@@ -238,7 +263,8 @@ final class HLSParallelDownloader {
         guard let playlistURL = URL(string: playlistURLString) else { throw VODError.invalidURL }
         let fm = FileManager.default
         let dir = Filename.temporaryURL(for: finalOutput, suffix: ".hls-\(workID.uuidString)")
-        try? fm.removeItem(at: dir)
+        // Reuse an existing work dir (resume); already-fetched segments are skipped
+        // below. A fresh cancel/retry removes the dir elsewhere.
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         state.update { $0.workDir = dir }
 
@@ -255,6 +281,11 @@ final class HLSParallelDownloader {
 
         let text = try await fetchText(url: playlistURL, headers: headers, session: session)
         let parsed = try parsePlaylist(text, baseURL: playlistURL)
+        // AES-128 (membership) playlists: decrypt each media segment ourselves,
+        // reusing the live engine's proven key/AES handling. The init segment
+        // (EXT-X-MAP) is left as-is, matching the live reader.
+        let aesKey = try await loadAESKey(playlistText: text, baseURL: playlistURL,
+                                          headers: headers, session: session)
         let clipEnd = clipStart.flatMap { start in clipDuration.map { start + $0 } }
         let selected = selectSegments(parsed.segments, clipStart: clipStart, clipEnd: clipEnd)
         guard !selected.isEmpty else { throw VODError.noManifest }
@@ -271,7 +302,8 @@ final class HLSParallelDownloader {
         for (offset, segment) in selected.enumerated() {
             assets.append(Asset(remote: segment.url,
                                 local: dir.appendingPathComponent(String(format: "seg_%06d.m4v", offset)),
-                                logicalSegment: true))
+                                logicalSegment: true,
+                                sequence: segment.index))
         }
 
         let progress = Synchronized(ProgressState(), label: "ChzzkDownloader.HLSParallelDownloader.progress")
@@ -304,14 +336,29 @@ final class HLSParallelDownloader {
                 group.addTask { [weak self] in
                     guard let self else { return }
                     if self.isCanceled { throw CancellationError() }
-                    let data = try await self.fetchData(url: asset.remote, headers: headers, session: session)
+                    // Resume: a fully-written segment already on disk is skipped.
+                    if let sz = (try? FileManager.default.attributesOfItem(atPath: asset.local.path)[.size]) as? Int, sz > 0 {
+                        report(addedBytes: sz, logicalSegment: asset.logicalSegment)
+                        return
+                    }
+                    var data = try await self.fetchData(url: asset.remote, headers: headers, session: session)
                     await limiter.consume(data.count)
                     if self.isCanceled { throw CancellationError() }
-                    // HLS segment temp files can be very large. Avoid Foundation's
-                    // atomic write path here because it may stage through the
-                    // system temporary volume; write directly into the final
-                    // output folder's work directory instead.
-                    try data.write(to: asset.local)
+                    // Decrypt AES-128 media segments (init segment stays plaintext).
+                    if asset.logicalSegment, let aesKey {
+                        let iv = aesKey.explicitIV ?? AES128.iv(forSequence: asset.sequence)
+                        guard let plain = AES128.decryptCBC(data, key: aesKey.key, iv: iv) else {
+                            throw VODError.decryptionFailed
+                        }
+                        data = plain
+                    }
+                    // Write atomically within the work dir (temp + rename, same volume)
+                    // so a paused/interrupted segment is never left half-written — making
+                    // the skip-on-resume check above safe.
+                    let tmp = asset.local.appendingPathExtension("part")
+                    try? FileManager.default.removeItem(at: tmp)
+                    try data.write(to: tmp)
+                    try FileManager.default.moveItem(at: tmp, to: asset.local)
                     report(addedBytes: data.count, logicalSegment: asset.logicalSegment)
                 }
                 return true
@@ -363,6 +410,19 @@ final class HLSParallelDownloader {
             }
         }
         throw lastError ?? VODError.noManifest
+    }
+
+    /// Reads the playlist's EXT-X-KEY (AES-128, membership VOD) and fetches the key
+    /// bytes. Reuses ChzzkCaptureCore's playlist/key parsing so this matches the
+    /// proven live decryption. Returns nil for unencrypted playlists.
+    private func loadAESKey(playlistText: String, baseURL: URL, headers: [String: String],
+                            session: URLSession) async throws -> AESKey? {
+        guard let key = HLSMediaPlaylist.parse(playlistText)?.key, key.isEncrypted,
+              let uri = key.uri,
+              let keyURL = URL(string: uri, relativeTo: baseURL)?.absoluteURL else { return nil }
+        let keyData = try await fetchData(url: keyURL, headers: headers, session: session)
+        let iv = key.iv.flatMap(AES128.iv(fromHex:))
+        return AESKey(key: keyData, explicitIV: iv)
     }
 
     private func parsePlaylist(_ text: String, baseURL: URL) throws -> (mapURL: URL?, segments: [HLSRemoteSegment]) {

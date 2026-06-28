@@ -2,7 +2,7 @@ import Foundation
 
 /// Owns one streamlink->ffmpeg recording: streamlink stdout is piped into
 /// ffmpeg stdin; ffmpeg stderr carries `-progress pipe:2` output.
-final class RecordingSession {
+final class RecordingSession: RecordingBackend {
     private let streamlink = Process()
     private let ffmpeg = Process()
     private let bridge = Pipe()          // streamlink stdout -> ffmpeg stdin

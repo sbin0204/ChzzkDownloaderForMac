@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.3.1
+
+- Added an optional built-in capture engine that records live streams and downloads VODs natively (HLS polling, AES-128 decryption, MP4 remux) with minimal reliance on streamlink and ffmpeg. It is opt-in under Recording Settings → Experimental.
+- Full VOD downloads can now run entirely through the built-in engine, including permission-gated and AES-encrypted (membership) videos.
+- Added pause and resume for VOD downloads: paused work is kept on disk and already-downloaded segments are skipped on resume.
+- Added all-phase VOD progress labels (downloading, merging, preparing) so the download no longer looks frozen during long steps.
+- The dashboard now shows live thumbnails, viewer counts, and uptime, with a grid/list toggle for the current-live section.
+- Added an optional galloping-horse indicator next to active downloads — a nod to Muybridge's 1878 "The Horse in Motion" — that runs faster or slower with the download speed. It is off by default; enable it under the VOD download options.
+- Added a bottom fade on long lists, row/card hover highlights, list animations, and a right-click menu on download history (reveal in Finder, copy path, retry, delete).
+- Added Siri / Shortcuts / Spotlight actions (App Intents) for recording channels, scheduling, recording all live channels, and downloading VODs (active when the app is signed with a real identity).
+- Fixed a bug where "Reveal in Finder" in the download history could fail to open Finder.
+- Quick-record files now use the streamer's nickname instead of the raw channel ID.
+
 ## 1.3.0
 
 - Added VOD source import: paste a direct `vod_chunklist.m3u8` / `vod_playlist.m3u8` / `.mpd` / `.mp4` URL to download it, in addition to regular Chzzk video/clip links.

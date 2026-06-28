@@ -88,6 +88,12 @@ struct VODView: View {
             }
 
             VODDownloadSettingsSection()
+
+            Section("표시") {
+                Toggle("다운로드 중 질주하는 말 표시", isOn: $model.config.show_download_horse)
+                Text("머이브리지의 1878년 〈움직이는 말〉을 본떠, 받는 속도에 맞춰 말이 빠르거나 천천히 달립니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .frame(width: 400)
@@ -218,6 +224,7 @@ struct VODCard: View {
         case .fetching: return "arrow.triangle.2.circlepath"
         case .ready: return "bolt.circle"
         case .downloading: return "arrow.down.circle"
+        case .paused: return "pause.circle.fill"
         case .completed: return "checkmark.circle.fill"
         case .failed: return "exclamationmark.triangle.fill"
         case .canceled: return "pause.circle"
@@ -229,6 +236,7 @@ struct VODCard: View {
         case .fetching: return .secondary
         case .ready: return .brand
         case .downloading: return .brand
+        case .paused: return .brand
         case .completed: return .green
         case .failed: return .orange
         case .canceled: return .secondary
@@ -287,15 +295,47 @@ struct VODCard: View {
 
         case .downloading:
             VStack(alignment: .leading, spacing: 4) {
-                if isPreparingDownload {
-                    ProgressView()
-                } else {
-                    ProgressView(value: item.percent)
+                HStack(spacing: 8) {
+                    if model.config.show_download_horse {
+                        MuybridgeHorseView(bytesPerSecond: item.bytesPerSecond)
+                            .frame(width: 30, height: 20)
+                    }
+                    if isPreparingDownload {
+                        ProgressView().frame(maxWidth: .infinity)
+                    } else {
+                        ProgressView(value: item.percent)
+                    }
                 }
                 HStack {
                     Text(progressText)
                         .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                     Spacer()
+                    if item.supportsPause, item.percent < 0.9 {
+                        Button("일시정지") { model.pauseVOD(item) }.controlSize(.small)
+                    }
+                    Button("취소") { model.cancelVOD(item) }.controlSize(.small)
+                }
+            }
+
+        case .paused:
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    if model.config.show_download_horse {
+                        MuybridgeHorseView(bytesPerSecond: 0)
+                            .frame(width: 30, height: 20)
+                    }
+                    ProgressView(value: item.percent)
+                }
+                HStack {
+                    Label("일시정지됨", systemImage: "pause.circle")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if item.percent > 0 {
+                        Text("· \(Int(item.percent * 100))%")
+                            .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                    }
+                    Spacer()
+                    Button("재개") { model.resumeVOD(item) }
+                        .controlSize(.small).buttonStyle(.borderedProminent)
                     Button("취소") { model.cancelVOD(item) }.controlSize(.small)
                 }
             }
@@ -364,9 +404,12 @@ struct VODCard: View {
 
     private var progressText: String {
         if isPreparingDownload {
-            return item.sizeText.isEmpty || item.sizeText == "N/A" ? "다운로드 준비중…" : item.sizeText
+            return item.sizeText.isEmpty || item.sizeText == "N/A" ? "다운로드 준비 중…" : item.sizeText
         }
-        return "\(Int(item.percent * 100))% · \(item.sizeText) · \(item.speedText)"
+        var parts = ["\(Int(item.percent * 100))%"]
+        if !item.sizeText.isEmpty, item.sizeText != "N/A" { parts.append(item.sizeText) }
+        if !item.speedText.isEmpty { parts.append(item.speedText) }
+        return parts.joined(separator: " · ")
     }
 
     private func hms(_ sec: Double) -> String {

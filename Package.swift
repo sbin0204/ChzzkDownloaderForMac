@@ -23,10 +23,19 @@ let package = Package(
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.2")
     ],
     targets: [
+        // Native capture core (long-term goal: fully replace streamlink + ffmpeg).
+        // Pure, dependency-free, and independently testable. Used by the app behind
+        // the experimental "내장 엔진" flag for live recording and VOD downloads.
+        .target(
+            name: "ChzzkCaptureCore",
+            exclude: ["README.md"],
+            swiftSettings: typeCheckWarnings
+        ),
         .executableTarget(
             name: "ChzzkDownloader",
             dependencies: [
-                .product(name: "Sparkle", package: "Sparkle")
+                .product(name: "Sparkle", package: "Sparkle"),
+                "ChzzkCaptureCore",
             ],
             exclude: [
                 "cdm.icon",
@@ -40,6 +49,10 @@ let package = Package(
         .testTarget(
             name: "ChzzkDownloaderTests",
             dependencies: ["ChzzkDownloader"]
+        ),
+        .testTarget(
+            name: "ChzzkCaptureCoreTests",
+            dependencies: ["ChzzkCaptureCore"]
         )
     ]
 )

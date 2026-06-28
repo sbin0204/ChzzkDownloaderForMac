@@ -14,7 +14,7 @@ struct DashboardView: View {
     }
 
     var body: some View {
-        ScrollView {
+        FadingScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 statusSummary
 
@@ -127,6 +127,8 @@ struct DashboardView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 4)
             .cardSurface()
+            .animation(.default, value: model.config.channels.map(\.id))
+            .animation(.default, value: model.recordingChannels)
         }
     }
 
@@ -134,6 +136,8 @@ struct DashboardView: View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 12)], spacing: 12) {
             ForEach(model.config.channels) { liveCard($0) }
         }
+        .animation(.default, value: model.config.channels.map(\.id))
+        .animation(.default, value: model.recordingChannels)
     }
 
     @ViewBuilder private func liveRow(_ ch: Channel) -> some View {
@@ -161,6 +165,8 @@ struct DashboardView: View {
             recordControls(ch, isRecording: isRecording, isWriting: isWriting)
         }
         .padding(.vertical, 8)
+        .contentShape(Rectangle())
+        .hoverHighlight(cornerRadius: 6)
     }
 
     @ViewBuilder private func liveCard(_ ch: Channel) -> some View {
@@ -188,6 +194,7 @@ struct DashboardView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
+        .hoverHighlight(cornerRadius: 8)
         .cardSurface()
     }
 

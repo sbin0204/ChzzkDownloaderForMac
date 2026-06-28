@@ -135,6 +135,14 @@ struct RecordingSettingsView: View {
             EncoderSection(kind: .hevc)
             EncoderSection(kind: .av1)
 
+            Section("실험적") {
+                Toggle("내장 엔진 사용 (녹화·VOD, streamlink·ffmpeg 최소화)", isOn: $model.config.use_native_engine)
+                Text("켜면 앱 내장 엔진을 사용합니다. ① 라이브 녹화: streamlink·ffmpeg 없이 처리(TS·MP4만, MKV·재인코딩은 자동으로 기존 방식). "
+                     + "② VOD: 클립이 아닌 전체 다운로드를 ffmpeg 없이 처리 — 멤버십/암호화 영상도 받기·AES 복호화·합치기 모두 내장(빠른·부분 다운로드는 그대로, 실패 시 자동으로 ffmpeg). "
+                     + "라이브는 아직 재시도·재연결이 없어 장시간·불안정한 회선에서는 기존 방식이 더 안정적입니다. 기존 방식과 비교용 옵션입니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
             Section {
                 Button(role: .destructive) { showResetConfirm = true } label: {
                     Label("녹화 설정 기본값으로 되돌리기", systemImage: "arrow.counterclockwise")

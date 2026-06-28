@@ -30,10 +30,11 @@ struct HistoryView: View {
                         description: Text("다운로드한 영상의 기록이 여기에 표시됩니다. 실패한 항목은 다시 받을 수 있습니다."))
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    ScrollView {
+                    FadingScrollView {
                         LazyVStack(spacing: 8) {
                             ForEach(records) { record in HistoryRow(record: record) }
                         }
+                        .animation(.default, value: records.map(\.id))
                     }
                 }
             }
@@ -64,7 +65,9 @@ struct HistoryRow: View {
             actions
         }
         .padding(12)
+        .hoverHighlight(cornerRadius: 8)
         .cardSurface()
+        .contextMenu { rowMenu }
         .quickLookPreview($previewURL)
         .confirmationDialog("이 기록을 삭제할까요?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
             Button("삭제", role: .destructive) { model.deleteRecord(record) }
@@ -72,6 +75,28 @@ struct HistoryRow: View {
         } message: {
             Text(deleteMessage)
         }
+    }
+
+    @ViewBuilder private var rowMenu: some View {
+        if record.status == .completed {
+            let url = URL(fileURLWithPath: record.finalPath)
+            let exists = FileManager.default.fileExists(atPath: record.finalPath)
+            Button { previewURL = url } label: { Label("미리보기", systemImage: "eye") }
+                .disabled(!exists)
+            Button { revealInFinder() } label: {
+                Label(exists ? "Finder에서 보기" : "저장 폴더 열기", systemImage: "folder")
+            }
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(record.finalPath, forType: .string)
+            } label: { Label("파일 경로 복사", systemImage: "doc.on.doc") }
+            Divider()
+        }
+        if record.status == .interrupted || record.status == .failed {
+            Button { model.retryRecord(record) } label: { Label("다시 받기", systemImage: "arrow.clockwise") }
+            Divider()
+        }
+        Button(role: .destructive) { showDeleteConfirm = true } label: { Label("기록 삭제", systemImage: "trash") }
     }
 
     @ViewBuilder private var statusBadge: some View {
@@ -110,13 +135,7 @@ struct HistoryRow: View {
                 .controlSize(.small)
                 .disabled(!exists)
                 .help(exists ? "공유" : "파일을 찾을 수 없습니다")
-                Button {
-                    if exists {
-                        NSWorkspace.shared.activateFileViewerSelecting([url])
-                    } else {
-                        NSWorkspace.shared.open(url.deletingLastPathComponent())
-                    }
-                } label: {
+                Button { revealInFinder() } label: {
                     Label("Finder", systemImage: "folder")
                 }
                 .controlSize(.small)
@@ -143,6 +162,30 @@ struct HistoryRow: View {
         }
         .controlSize(.small)
         .help("기록 삭제")
+    }
+
+    /// Reveals the file in Finder. Falls back gracefully when the file — or its
+    /// whole folder — is gone (deleted, moved, or on an unmounted external drive):
+    /// it opens the nearest existing ancestor folder and explains why, instead of
+    /// silently doing nothing (which is what `open` on a missing path does).
+    private func revealInFinder() {
+        let url = URL(fileURLWithPath: record.finalPath)
+        let fm = FileManager.default
+        if fm.fileExists(atPath: url.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            return
+        }
+        let parent = url.deletingLastPathComponent()
+        if fm.fileExists(atPath: parent.path) {
+            NSWorkspace.shared.open(parent)   // file gone, folder still there
+            return
+        }
+        var ancestor = parent
+        while ancestor.path != "/" && !fm.fileExists(atPath: ancestor.path) {
+            ancestor = ancestor.deletingLastPathComponent()
+        }
+        NSWorkspace.shared.open(ancestor)
+        model.showToast("저장 위치를 찾을 수 없습니다: \(parent.path) — 외장 드라이브 연결을 확인하세요.")
     }
 
     private var deleteMessage: String {

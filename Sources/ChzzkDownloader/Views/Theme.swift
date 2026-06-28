@@ -19,15 +19,33 @@ extension Color {
 }
 
 extension View {
-    /// A restrained, dark-mode-correct surface for discrete list items.
-    /// Uses a hierarchical fill + hairline separator instead of pure-black overlays.
+    /// An opaque elevated surface for in-window content cards and lists. Apple uses
+    /// an opaque grouped background (not a translucent material) for content inside
+    /// a window — material is for sidebars/popovers/HUDs. `controlBackgroundColor`
+    /// reads bright/white in light mode and a properly elevated grey in dark mode,
+    /// so lists no longer look dim over the window background.
     func cardSurface(cornerRadius: CGFloat = 8) -> some View {
         self
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius))
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: cornerRadius))
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius)
                     .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
             )
+    }
+
+    /// Liquid Glass (macOS 26+) for floating control-layer surfaces — toasts,
+    /// bars, pills. Falls back to a translucent material on macOS 14–15. Do NOT
+    /// use on content cards/lists; per Apple's guidance those stay opaque
+    /// (see cardSurface) for legibility.
+    @ViewBuilder
+    func liquidGlass(in shape: some InsettableShape) -> some View {
+        if #available(macOS 26.0, *) {
+            self.glassEffect(.regular, in: shape)
+        } else {
+            self
+                .background(.regularMaterial, in: shape)
+                .overlay(shape.strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5))
+        }
     }
 
     func pageContentPadding() -> some View {
@@ -39,6 +57,98 @@ extension View {
 
     /// Tabular figures for data that should line up column-to-column.
     func dataFigures() -> some View { self.monospacedDigit() }
+
+    /// A subtle background tint while the pointer is over a list row or card —
+    /// the standard macOS hover affordance. Sits behind content (above any card
+    /// surface) so labels stay fully legible.
+    func hoverHighlight(cornerRadius: CGFloat = 6) -> some View {
+        modifier(HoverHighlight(cornerRadius: cornerRadius))
+    }
+}
+
+/// Encapsulates its own hover state so it can be dropped on rows built inside
+/// `@ViewBuilder` functions (which cannot hold `@State`).
+struct HoverHighlight: ViewModifier {
+    var cornerRadius: CGFloat = 6
+    @State private var hovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .background(hovering ? Color.primary.opacity(0.06) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: cornerRadius))
+            .animation(.easeInOut(duration: 0.12), value: hovering)
+            .onHover { hovering = $0 }
+    }
+}
+
+// MARK: - Fading scroll
+
+/// A vertical `ScrollView` that fades its bottom edge while more content remains
+/// below the fold — a quiet cue that the list keeps going. The fade hides when the
+/// content fits the viewport or the user has scrolled to the end, so short lists
+/// stay flat and there is no fade once you reach the bottom.
+struct FadingScrollView<Content: View>: View {
+    private let fadeHeight: CGFloat
+    private let content: Content
+
+    init(fadeHeight: CGFloat = 28, @ViewBuilder content: () -> Content) {
+        self.fadeHeight = fadeHeight
+        self.content = content()
+    }
+
+    @State private var viewportHeight: CGFloat = 0
+    @State private var contentHeight: CGFloat = 0
+    @State private var scrolled: CGFloat = 0
+
+    private var moreBelow: Bool {
+        contentHeight > viewportHeight + 1 && scrolled < contentHeight - viewportHeight - 1
+    }
+
+    var body: some View {
+        ScrollView {
+            content
+                .background(
+                    GeometryReader { geo in
+                        Color.clear
+                            .preference(key: ScrollContentHeightKey.self, value: geo.size.height)
+                            .preference(key: ScrollOffsetKey.self,
+                                        value: -geo.frame(in: .named("fadingScroll")).minY)
+                    })
+        }
+        .coordinateSpace(name: "fadingScroll")
+        .background(
+            GeometryReader { geo in
+                Color.clear.preference(key: ScrollViewportHeightKey.self, value: geo.size.height)
+            })
+        .onPreferenceChange(ScrollContentHeightKey.self) { contentHeight = $0 }
+        .onPreferenceChange(ScrollViewportHeightKey.self) { viewportHeight = $0 }
+        .onPreferenceChange(ScrollOffsetKey.self) { scrolled = $0 }
+        // Fade by masking the content to transparent at the bottom (rather than
+        // painting a coloured gradient on top). The real background — whatever it
+        // is, sidebar edge or rounded window corner included — shows through, so
+        // there is never a colour seam.
+        .mask(
+            VStack(spacing: 0) {
+                Rectangle().fill(.black)
+                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                    .frame(height: moreBelow ? fadeHeight : 0)
+            }
+            .animation(.easeInOut(duration: 0.2), value: moreBelow)
+        )
+    }
+}
+
+private struct ScrollContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+private struct ScrollViewportHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+private struct ScrollOffsetKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
 struct SectionTitle: View {
@@ -113,8 +223,7 @@ struct ToastView: View {
                     Text(message).font(.callout)
                 }
                 .padding(.horizontal, 14).padding(.vertical, 9)
-                .background(.regularMaterial, in: Capsule())
-                .overlay(Capsule().strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5))
+                .liquidGlass(in: Capsule())
                 .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
                 .padding(.bottom, 26)
                 .transition(.move(edge: .bottom).combined(with: .opacity))

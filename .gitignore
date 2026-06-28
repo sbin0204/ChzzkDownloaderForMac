@@ -14,9 +14,6 @@
 # Tooling caches
 /.serena/
 
-# Local agent guidance (internal, not published)
-AGENTS.md
-
 # Python bytecode cache (bundled streamlink plugin)
 __pycache__/
 *.pyc
